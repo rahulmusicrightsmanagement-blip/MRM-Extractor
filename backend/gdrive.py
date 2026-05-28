@@ -1,5 +1,6 @@
 """Google Drive uploader -> credentials built from .env -> uploads XLSX to a fixed folder."""
 import os
+import time
 from pathlib import Path
 
 import io
@@ -41,27 +42,76 @@ def _drive():
     return _service
 
 
-def upload_xlsx(local_path: str, drive_name: str | None = None) -> dict:
+def _escape_query(s: str) -> str:
+    return s.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def _find_existing(drive, name: str) -> str | None:
+    """Return the file id of an existing same-named file in the folder, or None."""
+    q = (
+        f"name = '{_escape_query(name)}' "
+        f"and '{FOLDER_ID}' in parents and trashed = false"
+    )
+    res = drive.files().list(
+        q=q,
+        spaces="drive",
+        fields="files(id, name)",
+        pageSize=1,
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
+    ).execute()
+    files = res.get("files", [])
+    return files[0]["id"] if files else None
+
+
+def upload_xlsx(local_path: str, drive_name: str | None = None, attempts: int = 4) -> dict:
+    """Upload, overwriting any existing file with the same name (one file per artist)."""
+    global _service
     if not FOLDER_ID:
         raise RuntimeError("GDRIVE_FOLDER_ID is not set in .env")
     src = Path(local_path)
     if not src.exists():
         raise FileNotFoundError(local_path)
     name = drive_name or src.name
-    drive = _drive()
-    body = {"name": name, "parents": [FOLDER_ID]}
-    media = MediaFileUpload(
-        str(src),
-        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        resumable=False,
-    )
-    f = drive.files().create(
-        body=body,
-        media_body=media,
-        fields="id, name, webViewLink, webContentLink",
-        supportsAllDrives=True,
-    ).execute()
-    return f
+
+    last_err = None
+    for attempt in range(attempts):
+        try:
+            drive = _drive()
+            media = MediaFileUpload(
+                str(src),
+                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                resumable=True,
+                chunksize=1024 * 1024,
+            )
+            existing_id = _find_existing(drive, name)
+            if existing_id:
+                # Update the existing file in place -> no duplicate.
+                request = drive.files().update(
+                    fileId=existing_id,
+                    media_body=media,
+                    fields="id, name, webViewLink, webContentLink",
+                    supportsAllDrives=True,
+                )
+            else:
+                request = drive.files().create(
+                    body={"name": name, "parents": [FOLDER_ID]},
+                    media_body=media,
+                    fields="id, name, webViewLink, webContentLink",
+                    supportsAllDrives=True,
+                )
+            response = None
+            while response is None:
+                _, response = request.next_chunk()
+            return response
+        except Exception as e:
+            last_err = e
+            _service = None  # force a fresh client (new auth/connection) on retry
+            if attempt < attempts - 1:
+                wait = 2 ** attempt
+                print(f"[GDrive] upload error ({e}) — retry {attempt + 1}/{attempts} in {wait}s")
+                time.sleep(wait)
+    raise RuntimeError(f"Drive upload failed after {attempts} attempts: {last_err}")
 
 
 def download_bytes(file_id: str) -> bytes:

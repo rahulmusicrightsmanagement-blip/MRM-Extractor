@@ -1,0 +1,12 @@
+**/node_modules
+**/__pycache__
+**/dist
+**/.env
+**/.env.local
+**/*.xlsx
+**/.gdrive_token.json
+**/gdrive_oauth_client.json
+**/gdrive_service_account.json
+.git
+.vscode
+.idea

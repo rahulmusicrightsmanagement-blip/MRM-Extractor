@@ -1,8 +1,14 @@
-# secrets
+# secrets — .env files are ignored, .env.example IS committed
+.env
+.env.local
 backend/.env
+frontend/.env
 backend/.gdrive_token.json
 backend/gdrive_oauth_client.json
 backend/gdrive_service_account.json
+!.env.example
+!backend/.env.example
+!frontend/.env.example
 
 # python
 __pycache__/

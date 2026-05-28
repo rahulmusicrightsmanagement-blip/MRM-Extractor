@@ -1,0 +1,10 @@
+.env
+.env.local
+__pycache__/
+*.pyc
+*.pyo
+jobs/
+*.xlsx
+.gdrive_token.json
+gdrive_oauth_client.json
+gdrive_service_account.json

@@ -1,0 +1,35 @@
+# Local full-stack test of MRM Extractor.
+#   docker compose up --build
+# Backend  -> http://localhost:8000
+# Frontend -> http://localhost:5173
+#
+# Backend secrets are read from backend/.env (not committed).
+# The frontend is built with VITE_API_URL baked in (Vite inlines at build time),
+# so it talks to the backend at http://localhost:8000 from your browser.
+
+services:
+  backend:
+    build:
+      context: ./backend
+    env_file:
+      - ./backend/.env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8000
+      # Allow the dockerized frontend origin (and localhost dev) through CORS.
+      ALLOWED_ORIGINS: http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Browser reaches the backend on the host's published port.
+        VITE_API_URL: http://localhost:8000
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+    restart: unless-stopped

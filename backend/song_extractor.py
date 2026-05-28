@@ -187,12 +187,17 @@ def apple_scrape_credits(song_id, song_name=""):
 _APPLE_SUPPRESS_404_PATTERNS = ("/artists/",)
 
 
-def apple_fetch(path):
+def apple_fetch(path, _attempt=0):
     url = ("https://api.music.apple.com" + path) if path.startswith("/v1/") else ("https://api.music.apple.com/v1" + path)
     try:
         r = requests.get(url, headers={"Authorization": f"Bearer {APPLE_DEVELOPER_TOKEN}"}, timeout=30)
     except Exception as e:
-        print(f"[Apple] fetch exception: {e}")
+        if _attempt < 4:
+            wait = 2 ** _attempt
+            print(f"[Apple] network error ({e}) — retry {_attempt + 1}/4 in {wait}s")
+            time.sleep(wait)
+            return apple_fetch(path, _attempt + 1)
+        print(f"[Apple] fetch exception (gave up): {e}")
         return None
     if r.status_code == 200:
         try:
@@ -201,9 +206,15 @@ def apple_fetch(path):
             return None
     if r.status_code == 429:
         time.sleep(7)
-        return apple_fetch(path)
+        return apple_fetch(path, _attempt)
     if r.status_code == 404 and any(p in path for p in _APPLE_SUPPRESS_404_PATTERNS):
         return None
+    # Transient server errors -> retry with backoff
+    if r.status_code in (500, 502, 503, 504) and _attempt < 4:
+        wait = 2 ** _attempt
+        print(f"[Apple] HTTP {r.status_code} — retry {_attempt + 1}/4 in {wait}s")
+        time.sleep(wait)
+        return apple_fetch(path, _attempt + 1)
     print(f"[Apple] HTTP {r.status_code} -> {path} :: {r.text[:200]}")
     return None
 
@@ -512,12 +523,17 @@ def get_spotify_token():
 
 
 # ── SPOTIFY HTTP ──
-def spotify_fetch(path, token):
+def spotify_fetch(path, token, _attempt=0):
     url = "https://api.spotify.com/v1" + path
     try:
         r = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=30)
     except Exception as e:
-        print(f"[Spotify] fetch exception: {e}")
+        if _attempt < 4:
+            wait = 2 ** _attempt
+            print(f"[Spotify] network error ({e}) — retry {_attempt + 1}/4 in {wait}s")
+            time.sleep(wait)
+            return spotify_fetch(path, token, _attempt + 1)
+        print(f"[Spotify] fetch exception (gave up): {e}")
         return None
     if r.status_code == 200:
         try:
@@ -528,7 +544,13 @@ def spotify_fetch(path, token):
         wait = (int(r.headers.get("Retry-After", "5")) + 1)
         print(f"[Spotify] rate limited — waiting {wait}s")
         time.sleep(wait)
-        return spotify_fetch(path, token)
+        return spotify_fetch(path, token, _attempt)
+    # Transient server errors -> retry with backoff (fixes dropped albums on large artists)
+    if r.status_code in (500, 502, 503, 504) and _attempt < 4:
+        wait = 2 ** _attempt
+        print(f"[Spotify] HTTP {r.status_code} — retry {_attempt + 1}/4 in {wait}s")
+        time.sleep(wait)
+        return spotify_fetch(path, token, _attempt + 1)
     print(f"[Spotify] HTTP {r.status_code} -> {path} :: {r.text[:200]}")
     return None
 

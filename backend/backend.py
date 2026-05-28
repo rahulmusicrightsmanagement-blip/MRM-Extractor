@@ -40,9 +40,13 @@ from auth import (
 ROOT = Path(__file__).parent
 
 app = FastAPI()
+
+# Comma-separated list of allowed frontend origins. Falls back to "*" for local dev.
+_origins_env = os.getenv("ALLOWED_ORIGINS", "").strip()
+ALLOWED_ORIGINS = [o.strip() for o in _origins_env.split(",") if o.strip()] or ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -176,30 +180,55 @@ def run_job(job_id: str, req: ExtractReq):
         info["file_name"] = file_name
         info["merged_count"] = merged_count
 
-        # Upload to Drive immediately -> Drive is the single source of truth.
+        # Upload to Drive (with internal retries). Drive is the primary store.
         print("[STAGE] Uploading to Google Drive...")
+        uploaded = False
         try:
             res = gdrive.upload_xlsx(str(final_path), drive_name=file_name)
             info["drive_id"] = res.get("id", "")
             info["drive_link"] = res.get("webViewLink", "")
+            uploaded = True
             print(f"[STAGE] Saved to Google Drive -> {info['drive_link']}")
         except Exception as e:
-            print(f"[GDrive] upload failed: {e}")
+            print(f"[GDrive] upload failed after retries: {e}")
             info["drive_id"] = ""
             info["drive_link"] = ""
+
+        # Record history NOW (on completion) -> always matches Drive, even if never downloaded.
+        try:
+            db()["downloads"].insert_one({
+                "email": info.get("owner", ""),
+                "file": file_name,
+                "job_id": job_id,
+                "artist": artist,
+                "apple_ids": req.apple_ids.strip(),
+                "spotify_ids": req.spotify_ids.strip(),
+                "drive_link": info.get("drive_link", ""),
+                "drive_id": info.get("drive_id", ""),
+                "songs": merged_count,
+                "at": datetime.now(timezone.utc),
+            })
+        except Exception as e:
+            print(f"[History] insert failed: {e}")
 
         info["status"] = "done"
         q.put({"type": "done", "file": file_name, "job_id": job_id, "merged_count": merged_count, "drive_link": info.get("drive_link", "")})
     except Exception as e:
+        uploaded = False
         info["status"] = "error"
         q.put({"type": "error", "msg": str(e)})
     finally:
         sys.stdout = orig_stdout
-        # Wipe all local artifacts -> nothing persists on disk.
-        try:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-        except Exception:
-            pass
+        # Only delete local copy if it's safely in Drive.
+        # If the upload failed, KEEP the file on disk so the download still works.
+        if uploaded:
+            try:
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+            except Exception:
+                pass
+        else:
+            info["local_path"] = str(final_path)
+            print("[STAGE] Kept local copy as fallback (Drive upload failed).")
         q.put(None)
 
 
@@ -340,38 +369,27 @@ def download(job_id: str, token: str = Query(default="")):
     if not payload:
         raise HTTPException(401, "Missing token")
     info = JOBS.get(job_id)
-    if not info or not info.get("drive_id"):
-        raise HTTPException(404, "File not ready (Drive upload missing)")
+    if not info:
+        raise HTTPException(404, "Unknown job")
 
     drive_id = info.get("drive_id", "")
     drive_link = info.get("drive_link", "")
     file_name = info.get("file_name", f"SongExtraction_{job_id[:8]}.xlsx")
+    local_path = info.get("local_path", "")
 
-    try:
-        data = gdrive.download_bytes(drive_id)
-    except Exception as e:
-        print(f"[GDrive] fetch failed: {e}")
-        raise HTTPException(502, "Could not fetch file from Google Drive")
-
-    # Log the download once (avoid double-logging on repeat clicks of same job).
-    if not info.get("logged"):
-        info["logged"] = True
+    data = None
+    if drive_id:
         try:
-            db()["downloads"].insert_one({
-                "email": payload.get("email"),
-                "file": file_name,
-                "job_id": job_id,
-                "artist": info.get("artist", ""),
-                "apple_ids": info.get("apple_ids", ""),
-                "spotify_ids": info.get("spotify_ids", ""),
-                "drive_link": drive_link,
-                "drive_id": drive_id,
-                "songs": info.get("merged_count", 0),
-                "at": datetime.now(timezone.utc),
-            })
+            data = gdrive.download_bytes(drive_id)
         except Exception as e:
-            print(f"[History] insert failed: {e}")
+            print(f"[GDrive] fetch failed, trying local fallback: {e}")
+    if data is None and local_path and Path(local_path).exists():
+        # Drive upload had failed -> serve the kept local copy.
+        data = Path(local_path).read_bytes()
+    if data is None:
+        raise HTTPException(404, "File not available (Drive upload failed and no local copy)")
 
+    # History is recorded at extraction time (see run_job), not here.
     return Response(
         content=data,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -407,4 +425,6 @@ def root():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "8000"))
+    uvicorn.run(app, host=host, port=port)
