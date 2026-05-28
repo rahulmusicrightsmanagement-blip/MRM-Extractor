@@ -1,0 +1,21 @@
+# secrets
+backend/.env
+backend/.gdrive_token.json
+backend/gdrive_oauth_client.json
+backend/gdrive_service_account.json
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+
+# node
+node_modules/
+frontend/dist/
+
+# runtime artifacts
+*.xlsx
+
+# editor
+.vscode/
+.idea/
