@@ -3,9 +3,9 @@
 # Backend  -> http://localhost:8000
 # Frontend -> http://localhost:5173
 #
-# Backend secrets are read from backend/.env (not committed).
-# The frontend is built with VITE_API_URL baked in (Vite inlines at build time),
-# so it talks to the backend at http://localhost:8000 from your browser.
+# Backend secrets can be read from backend/.env locally, or from Coolify
+# environment variables in production.
+# The frontend is built with VITE_API_URL baked in (Vite inlines at build time).
 
 services:
   backend:
@@ -14,22 +14,36 @@ services:
     env_file:
       - ./backend/.env
     environment:
+      APPLE_DEVELOPER_TOKEN: ${APPLE_DEVELOPER_TOKEN:-}
+      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
+      SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}
+      MONGO_URI: ${MONGO_URI:-}
+      MONGO_DB: ${MONGO_DB:-mrm_extractor}
+      JWT_SECRET: ${JWT_SECRET:-}
+      SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL:-}
+      SUPER_ADMIN_PASSWORD: ${SUPER_ADMIN_PASSWORD:-}
+      GDRIVE_FOLDER_ID: ${GDRIVE_FOLDER_ID:-}
+      GDRIVE_CLIENT_ID: ${GDRIVE_CLIENT_ID:-}
+      GDRIVE_CLIENT_SECRET: ${GDRIVE_CLIENT_SECRET:-}
+      GDRIVE_REFRESH_TOKEN: ${GDRIVE_REFRESH_TOKEN:-}
+      GMAIL_SENDER: ${GMAIL_SENDER:-}
+      GMAIL_APP_PASSWORD: ${GMAIL_APP_PASSWORD:-}
       HOST: 0.0.0.0
-      PORT: 8000
-      # Allow the dockerized frontend origin (and localhost dev) through CORS.
-      ALLOWED_ORIGINS: http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173
+      PORT: ${PORT:-8000}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173}
     ports:
-      - "8000:8000"
+      - "${BACKEND_PORT:-8000}:8000"
     restart: unless-stopped
 
   frontend:
     build:
       context: ./frontend
       args:
-        # Browser reaches the backend on the host's published port.
-        VITE_API_URL: http://localhost:8000
+        # Browser reaches the backend on the host's published port locally;
+        # Coolify should set this to the deployed backend URL.
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
     ports:
-      - "5173:80"
+      - "${FRONTEND_PORT:-5173}:80"
     depends_on:
       - backend
     restart: unless-stopped
