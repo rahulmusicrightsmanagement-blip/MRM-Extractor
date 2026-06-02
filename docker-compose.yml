@@ -1,9 +1,9 @@
 # Local full-stack test of MRM Extractor.
-#   docker compose up --build
+#   docker compose --env-file backend/.env up --build
 # Backend  -> http://localhost:8000
 # Frontend -> http://localhost:5173
 #
-# Backend secrets can be read from backend/.env locally, or from Coolify
+# Backend secrets are supplied from backend/.env locally, or from Coolify
 # environment variables in production.
 # The frontend is built with VITE_API_URL baked in (Vite inlines at build time).
 
@@ -11,8 +11,6 @@ services:
   backend:
     build:
       context: ./backend
-    env_file:
-      - ./backend/.env
     environment:
       APPLE_DEVELOPER_TOKEN: ${APPLE_DEVELOPER_TOKEN:-}
       SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
