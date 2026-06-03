@@ -688,13 +688,15 @@ function Extractor({ token, prefill }) {
           </div>
 
           <div className="lg:col-span-1">
-            <Card title="Pipeline">
-              {stages.length === 0 ? (
-                <Muted>Waiting for first event…</Muted>
-              ) : (
-                <Timeline stages={stages} running={running} />
-              )}
-            </Card>
+            <div className="lg:sticky lg:top-24">
+              <Card title="Pipeline">
+                {stages.length === 0 ? (
+                  <Muted>Waiting for first event…</Muted>
+                ) : (
+                  <Timeline stages={stages} running={running} />
+                )}
+              </Card>
+            </div>
           </div>
         </div>
       )}
@@ -759,7 +761,7 @@ function Counter({ label, value, accent }) {
 
 function Timeline({ stages, running }) {
   return (
-    <div className="space-y-1">
+    <div className="space-y-1 overflow-y-auto pr-1" style={{ maxHeight: "calc(100vh - 16rem)" }}>
       {stages.map((s, i) => {
         const isLast = i === stages.length - 1;
         const isActive = running && isLast && !s.done;
