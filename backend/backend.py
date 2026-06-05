@@ -102,6 +102,11 @@ JOBS = {}
 MAX_CONCURRENT_JOBS = 3
 _job_slots = threading.BoundedSemaphore(MAX_CONCURRENT_JOBS)
 
+# Safety net: never let a wedged/very-long job hold its slot forever, or the
+# queue would block all other users indefinitely. After this many seconds the
+# slot is force-released so waiting jobs can proceed.
+JOB_MAX_SECONDS = 15 * 60
+
 
 class ExtractReq(BaseModel):
     artist_name: str = ""
@@ -215,6 +220,19 @@ def run_job(job_id: str, req: ExtractReq):
     final_path = tmp_dir / file_name
 
     set_thread_queue(q)  # route this thread's prints to this job's queue
+
+    # Release the slot exactly once — whether by normal finish, crash, or the
+    # watchdog timeout. A double-release on a BoundedSemaphore would raise.
+    _release_lock = threading.Lock()
+    _released = {"done": False}
+
+    def _release_slot():
+        with _release_lock:
+            if not _released["done"]:
+                _released["done"] = True
+                _job_slots.release()
+
+    watchdog = None
     slot_acquired = False
     try:
         # Wait for a free slot if too many extractions are already running.
@@ -223,6 +241,11 @@ def run_job(job_id: str, req: ExtractReq):
             print("[STAGE] Waiting in queue (server busy with other extractions)...")
             _job_slots.acquire()
         slot_acquired = True
+        # Watchdog: force-release the slot after JOB_MAX_SECONDS so a wedged or
+        # very long job can never block the queue for everyone else.
+        watchdog = threading.Timer(JOB_MAX_SECONDS, _release_slot)
+        watchdog.daemon = True
+        watchdog.start()
         info["status"] = "running"
         print("[STAGE] Pipeline starting...")
         song_extractor.run_extraction(
@@ -277,8 +300,10 @@ def run_job(job_id: str, req: ExtractReq):
         info["status"] = "error"
         q.put({"type": "error", "msg": str(e)})
     finally:
+        if watchdog is not None:
+            watchdog.cancel()
         if slot_acquired:
-            _job_slots.release()
+            _release_slot()
         set_thread_queue(None)  # stop routing this thread's prints
         # Only delete local copy if it's safely in Drive.
         # If the upload failed, KEEP the file on disk so the download still works.
