@@ -631,6 +631,7 @@ function Extractor({ token, prefill }) {
   const [apple, setApple] = useState("");
   const [spotify, setSpotify] = useState("");
   const [running, setRunning] = useState(false);
+  const [queued, setQueued] = useState(false);
   const [stage, setStage] = useState("");
   const [stages, setStages] = useState([]);
   const [eta, setEta] = useState("");
@@ -647,6 +648,7 @@ function Extractor({ token, prefill }) {
     setStage(""); setStages([]); setEta(""); setEnrichProgress(null);
     setCounts({ apple: 0, spotify: 0 }); setMergedCount(null);
     setJobId(null); setDownloadReady(false); setError(""); setDriveLink("");
+    setQueued(false);
   };
 
   const newRun = () => {
@@ -700,12 +702,19 @@ function Extractor({ token, prefill }) {
           if (s) {
             const text = s[1].trim();
             setStage(text);
-            setStages((prev) => {
-              const last = prev[prev.length - 1];
-              const now = new Date();
-              const updated = last && !last.done ? [...prev.slice(0, -1), { ...last, done: true, endAt: now }] : prev;
-              return [...updated, { text, startAt: now, done: false }];
-            });
+            // The backend emits this when the job is waiting for a free slot.
+            if (/waiting in queue/i.test(text)) {
+              setQueued(true);
+            } else {
+              // Any other stage means the job has started running -> leave queue.
+              setQueued(false);
+              setStages((prev) => {
+                const last = prev[prev.length - 1];
+                const now = new Date();
+                const updated = last && !last.done ? [...prev.slice(0, -1), { ...last, done: true, endAt: now }] : prev;
+                return [...updated, { text, startAt: now, done: false }];
+              });
+            }
           }
           const m = line.match(/\[([^\]]+)\]\s+songs found:\s+(\d+)/i);
           if (m) {
@@ -811,11 +820,29 @@ function Extractor({ token, prefill }) {
       {step === 3 && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
           <div className="lg:col-span-2 space-y-5">
-            <Card title={running ? "Extracting…" : downloadReady ? "Extraction complete" : "Preparing…"} subtitle={running ? "Live progress from the pipeline" : downloadReady ? "Your Excel is ready to download" : ""}>
+            <Card
+              title={queued ? "Waiting in queue…" : running ? "Extracting…" : downloadReady ? "Extraction complete" : "Preparing…"}
+              subtitle={queued ? "The server is busy with other extractions" : running ? "Live progress from the pipeline" : downloadReady ? "Your Excel is ready to download" : ""}
+            >
               {error ? (
                 <Alert>{error}</Alert>
               ) : (
                 <>
+                  {queued && (
+                    <div
+                      className="rounded-xl px-4 py-3.5 mb-5 flex items-center gap-3"
+                      style={{ background: T.p1, border: `1px solid ${T.border}` }}
+                    >
+                      <span className="inline-block h-4 w-4 rounded-full border-2 border-t-transparent animate-spin" style={{ borderColor: `${T.ink} transparent ${T.ink} ${T.ink}` }} />
+                      <div className="text-sm">
+                        <div className="font-semibold" style={{ color: T.ink }}>You're in the queue — please wait</div>
+                        <div className="text-xs mt-0.5" style={{ color: T.ink2 }}>
+                          Your extraction will start automatically as soon as a slot is free. Keep this tab open.
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="grid grid-cols-3 gap-4 mb-5">
                     <Counter label="Apple Music" value={counts.apple} accent={T.p4} />
                     <Counter label="Spotify" value={counts.spotify} accent={T.p5} />
@@ -881,7 +908,7 @@ function Extractor({ token, prefill }) {
             <div className="lg:sticky lg:top-24">
               <Card title="Pipeline">
                 {stages.length === 0 ? (
-                  <Muted>Waiting for first event…</Muted>
+                  <Muted>{queued ? "Queued — waiting for a free slot…" : "Waiting for first event…"}</Muted>
                 ) : (
                   <Timeline stages={stages} running={running} />
                 )}
