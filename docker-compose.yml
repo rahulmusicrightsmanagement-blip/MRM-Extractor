@@ -29,9 +29,6 @@ services:
       HOST: 0.0.0.0
       PORT: ${PORT:-8000}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173}
-      # Base URL of the deployed frontend; used to build password-reset links in
-      # emails. Coolify should set this to the public frontend domain.
-      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
       MAX_CONCURRENT_JOBS: ${MAX_CONCURRENT_JOBS:-3}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
