@@ -97,7 +97,9 @@ JOBS = {}
 
 # Cap simultaneous extractions to avoid hammering the Apple/Spotify APIs (429s)
 # when many users run at once. Extra jobs wait their turn, then run normally.
-MAX_CONCURRENT_JOBS = int(os.getenv("MAX_CONCURRENT_JOBS", "3"))
+# Hardcoded (NOT read from env) so the cap is exactly 3 regardless of any
+# MAX_CONCURRENT_JOBS value set in the deployment environment.
+MAX_CONCURRENT_JOBS = 3
 _job_slots = threading.BoundedSemaphore(MAX_CONCURRENT_JOBS)
 
 
