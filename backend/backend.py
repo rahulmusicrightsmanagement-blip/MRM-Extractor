@@ -49,7 +49,9 @@ _origins_env = os.getenv("ALLOWED_ORIGINS", "").strip()
 ALLOWED_ORIGINS = [o.strip() for o in _origins_env.split(",") if o.strip()] or ["*"]
 
 # Base URL of the frontend, used to build password-reset links in emails.
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://127.0.0.1:5173").rstrip("/")
+# Defaults to the deployed frontend so reset links work in production without
+# extra env config. Local dev can override via FRONTEND_URL (e.g. in .env).
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://extractor.musicrightsmanagement.in").rstrip("/")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
