@@ -27,6 +27,8 @@ import email_digest
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from auth import (
+    consume_reset_token,
+    create_reset_token,
     current_user,
     db,
     decode_token,
@@ -34,6 +36,7 @@ from auth import (
     make_token,
     require_admin,
     seed_super_admin,
+    set_password,
     verify_password,
 )
 
@@ -44,6 +47,9 @@ app = FastAPI()
 # Comma-separated list of allowed frontend origins. Falls back to "*" for local dev.
 _origins_env = os.getenv("ALLOWED_ORIGINS", "").strip()
 ALLOWED_ORIGINS = [o.strip() for o in _origins_env.split(",") if o.strip()] or ["*"]
+
+# Base URL of the frontend, used to build password-reset links in emails.
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://127.0.0.1:5173").rstrip("/")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -87,6 +93,11 @@ def _safe_weekly_digest():
 
 JOBS = {}
 
+# Cap simultaneous extractions to avoid hammering the Apple/Spotify APIs (429s)
+# when many users run at once. Extra jobs wait their turn, then run normally.
+MAX_CONCURRENT_JOBS = int(os.getenv("MAX_CONCURRENT_JOBS", "3"))
+_job_slots = threading.BoundedSemaphore(MAX_CONCURRENT_JOBS)
+
 
 class ExtractReq(BaseModel):
     artist_name: str = ""
@@ -105,6 +116,15 @@ class CreateUserReq(BaseModel):
     role: str = "user"
 
 
+class ForgotReq(BaseModel):
+    email: EmailStr
+
+
+class ResetReq(BaseModel):
+    token: str
+    password: str
+
+
 def slugify(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_") or "Output"
 
@@ -115,11 +135,30 @@ def split_ids(text: str):
     return [x.strip() for x in re.split(r"[\s,;\n]+", text) if x.strip()]
 
 
-class StreamCapture(io.TextIOBase):
-    def __init__(self, original, q):
+# ── Per-job stdout routing (concurrency-safe) ──
+# Each worker thread registers its own queue; prints made on that thread go to
+# that job's queue only. The real stdout stays shared. No global sys.stdout
+# hijacking -> multiple users can run jobs at once without crossing logs.
+_thread_q = threading.local()
+
+
+def set_thread_queue(q):
+    """Route the calling thread's stdout to queue `q` (None to stop)."""
+    _thread_q.q = q
+
+
+def get_thread_queue():
+    """Current thread's job queue, or None. Used by worker pools to inherit it."""
+    return getattr(_thread_q, "q", None)
+
+
+class JobStreamRouter(io.TextIOBase):
+    """Installed once as sys.stdout. Routes writes to the calling thread's
+    registered queue (if any); otherwise passes through to the real stdout."""
+
+    def __init__(self, original):
         self.original = original
-        self.q = q
-        self.buf = ""
+        self._bufs = {}  # thread_id -> partial-line buffer
 
     def write(self, s):
         try:
@@ -127,18 +166,23 @@ class StreamCapture(io.TextIOBase):
             self.original.flush()
         except Exception:
             pass
-        self.buf += s
+        q = get_thread_queue()
+        if q is None:
+            return len(s)
+        tid = threading.get_ident()
+        buf = self._bufs.get(tid, "") + s
         while True:
-            idx_n = self.buf.find("\n")
-            idx_r = self.buf.find("\r")
+            idx_n = buf.find("\n")
+            idx_r = buf.find("\r")
             cuts = [i for i in (idx_n, idx_r) if i >= 0]
             if not cuts:
                 break
             cut = min(cuts)
-            line = self.buf[:cut].strip()
-            self.buf = self.buf[cut + 1:]
+            line = buf[:cut].strip()
+            buf = buf[cut + 1:]
             if line:
-                self.q.put({"type": "log", "msg": line})
+                q.put({"type": "log", "msg": line})
+        self._bufs[tid] = buf
         return len(s)
 
     def flush(self):
@@ -146,6 +190,11 @@ class StreamCapture(io.TextIOBase):
             self.original.flush()
         except Exception:
             pass
+
+
+# Install the router exactly once, at import time.
+if not isinstance(sys.stdout, JobStreamRouter):
+    sys.stdout = JobStreamRouter(sys.stdout)
 
 
 def run_job(job_id: str, req: ExtractReq):
@@ -161,10 +210,16 @@ def run_job(job_id: str, req: ExtractReq):
     raw_path = tmp_dir / f"{out_name}_raw.xlsx"
     final_path = tmp_dir / file_name
 
-    orig_stdout = sys.stdout
-    capture = StreamCapture(orig_stdout, q)
-    sys.stdout = capture
+    set_thread_queue(q)  # route this thread's prints to this job's queue
+    slot_acquired = False
     try:
+        # Wait for a free slot if too many extractions are already running.
+        if not _job_slots.acquire(blocking=False):
+            info["status"] = "queued"
+            print("[STAGE] Waiting in queue (server busy with other extractions)...")
+            _job_slots.acquire()
+        slot_acquired = True
+        info["status"] = "running"
         print("[STAGE] Pipeline starting...")
         song_extractor.run_extraction(
             artist_name=artist or "Unknown",
@@ -218,7 +273,9 @@ def run_job(job_id: str, req: ExtractReq):
         info["status"] = "error"
         q.put({"type": "error", "msg": str(e)})
     finally:
-        sys.stdout = orig_stdout
+        if slot_acquired:
+            _job_slots.release()
+        set_thread_queue(None)  # stop routing this thread's prints
         # Only delete local copy if it's safely in Drive.
         # If the upload failed, KEEP the file on disk so the download still works.
         if uploaded:
@@ -246,6 +303,32 @@ def login(req: LoginReq):
         "token": token,
         "user": {"email": u["email"], "role": u["role"]},
     }
+
+
+@app.post("/api/auth/forgot")
+def forgot_password(req: ForgotReq):
+    # Always return ok (don't reveal whether the email exists). Only send a
+    # mail if the user actually exists.
+    email = req.email.lower().strip()
+    user = db()["users"].find_one({"email": email})
+    if user:
+        try:
+            raw = create_reset_token(email)
+            reset_url = f"{FRONTEND_URL}/?reset={raw}"
+            email_digest.send_password_reset(email, reset_url)
+        except Exception as e:
+            print(f"[Reset] send failed for {email}: {e}")
+            raise HTTPException(500, "Could not send reset email. Please try again later.")
+    return {"ok": True}
+
+
+@app.post("/api/auth/reset")
+def reset_password(req: ResetReq):
+    if len(req.password) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters")
+    email = consume_reset_token(req.token.strip())
+    set_password(email, req.password)
+    return {"ok": True}
 
 
 @app.get("/api/auth/me")

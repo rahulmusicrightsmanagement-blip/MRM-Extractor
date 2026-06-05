@@ -6,30 +6,55 @@ import sys
 import time
 import base64
 import json
+import threading
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 # ── PROGRESS ──
-_PROG = {"label": "", "count": 0}
+# Thread-local so concurrent extraction jobs don't clobber each other's counts.
+_PROG = threading.local()
+
+def _prog():
+    d = getattr(_PROG, "d", None)
+    if d is None:
+        d = _PROG.d = {"label": "", "count": 0}
+    return d
 
 def progress_start(label):
-    _PROG["label"] = label
-    _PROG["count"] = 0
+    d = _prog()
+    d["label"] = label
+    d["count"] = 0
     sys.stdout.write(f"\n[{label}] songs found: 0")
     sys.stdout.flush()
 
 def progress_tick(n=1):
-    _PROG["count"] += n
-    sys.stdout.write(f"\r[{_PROG['label']}] songs found: {_PROG['count']}    ")
+    d = _prog()
+    d["count"] += n
+    sys.stdout.write(f"\r[{d['label']}] songs found: {d['count']}    ")
     sys.stdout.flush()
 
 def progress_end():
-    if _PROG["label"]:
-        sys.stdout.write(f"\r[{_PROG['label']}] songs found: {_PROG['count']} (done)\n")
+    d = _prog()
+    if d["label"]:
+        sys.stdout.write(f"\r[{d['label']}] songs found: {d['count']} (done)\n")
         sys.stdout.flush()
-    _PROG["label"] = ""
-    _PROG["count"] = 0
+    d["label"] = ""
+    d["count"] = 0
+
+
+# Worker threads in the enrichment pools must inherit the parent job's stdout
+# queue so their prints reach the right user's live log stream. Imported lazily
+# to avoid a circular import (backend imports this module).
+def _pool_kwargs():
+    try:
+        from backend import get_thread_queue, set_thread_queue
+    except Exception:
+        return {}
+    parent_q = get_thread_queue()
+    if parent_q is None:
+        return {}
+    return {"initializer": set_thread_queue, "initargs": (parent_q,)}
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -37,7 +62,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ── USER VARIABLES ──
+# ── USER VARIABLES (defaults only; the API passes per-job values to run_extraction) ──
 ARTIST_NAME = "SAMBATA"
 APPLE_MUSIC_IDS = ["1585494169"]
 SPOTIFY_TRACK_IDS = ["3Il6TyOnML9fMSCyDMbUCO"]
@@ -455,7 +480,7 @@ def apple_songs_by_id(ids):
             mm, ss = divmod(remaining, 60)
             print(f"[Enrich] {d}/{total} done -> ETA ~{mm}m {ss}s")
 
-    with ThreadPoolExecutor(max_workers=10) as ex:
+    with ThreadPoolExecutor(max_workers=10, **_pool_kwargs()) as ex:
         futs = [ex.submit(_one, i, s) for i, s in enumerate(all_songs)]
         for _ in as_completed(futs):
             pass
@@ -727,7 +752,7 @@ def _enrich_parallel(track_list, album_map, fallback, total):
             mm, ss = divmod(remaining, 60)
             print(f"[Enrich] {d}/{total} done -> ETA ~{mm}m {ss}s")
 
-    with ThreadPoolExecutor(max_workers=12) as ex:
+    with ThreadPoolExecutor(max_workers=12, **_pool_kwargs()) as ex:
         futs = [ex.submit(_one, i, t) for i, t in enumerate(track_list)]
         for _ in as_completed(futs):
             pass
@@ -1150,13 +1175,13 @@ def parse_ids_from_text(value, hint=""):
     return apple, spotify
 
 
-def collect_specific_ids():
+def collect_specific_ids(apple_music_ids, spotify_track_ids):
     apple, spotify = [], []
-    for v in APPLE_MUSIC_IDS:
+    for v in apple_music_ids:
         a, s = parse_ids_from_text(v, "apple")
         apple.extend(a)
         spotify.extend(s)
-    for v in SPOTIFY_TRACK_IDS:
+    for v in spotify_track_ids:
         a, s = parse_ids_from_text(v, "spotify")
         apple.extend(a)
         spotify.extend(s)
@@ -1229,8 +1254,8 @@ def _blank_columns(rows, cols):
     return out
 
 
-def run_apple_ids_tab(wb):
-    ids = collect_specific_ids()["apple"]
+def run_apple_ids_tab(wb, apple_music_ids, spotify_track_ids):
+    ids = collect_specific_ids(apple_music_ids, spotify_track_ids)["apple"]
     if not ids:
         write_sheet(wb, "Apple Music Songs", [], "No Apple Music IDs configured. Add IDs/URLs to APPLE_MUSIC_IDS.")
         return "Apple Music Songs: 0 rows (no IDs)"
@@ -1252,8 +1277,8 @@ def run_apple_ids_tab(wb):
         return f"Apple Music Songs: ERROR - {e}"
 
 
-def run_spotify_ids_tab(wb):
-    ids = collect_specific_ids()["spotify"]
+def run_spotify_ids_tab(wb, apple_music_ids, spotify_track_ids):
+    ids = collect_specific_ids(apple_music_ids, spotify_track_ids)["spotify"]
     if not ids:
         write_sheet(wb, "Spotify Songs", [], "No Spotify IDs configured. Add IDs/URLs to SPOTIFY_TRACK_IDS.")
         return "Spotify Songs: 0 rows (no IDs)"
@@ -1313,24 +1338,24 @@ def merge_unique(apple_rows, spotify_rows):
     return [merged[k] for k in order]
 
 
-def run_artist_name_tab(wb):
+def run_artist_name_tab(wb, artist_name):
     apple_rows, spotify_rows = [], []
     msgs = []
-    print(f"[STAGE] Searching Apple Music for artist '{ARTIST_NAME}'...")
-    progress_start(f"Apple [{ARTIST_NAME}]")
+    print(f"[STAGE] Searching Apple Music for artist '{artist_name}'...")
+    progress_start(f"Apple [{artist_name}]")
     try:
-        apple_rows = apple_artist_catalog(ARTIST_NAME)
+        apple_rows = apple_artist_catalog(artist_name)
         progress_end()
         print(f"[STAGE] Apple artist search done -> {len(apple_rows)} songs")
         msgs.append(f"Apple={len(apple_rows)}")
     except Exception as e:
         progress_end()
         msgs.append(f"Apple ERROR: {e}")
-    print(f"[STAGE] Searching Spotify for artist '{ARTIST_NAME}'...")
-    progress_start(f"Spotify [{ARTIST_NAME}]")
+    print(f"[STAGE] Searching Spotify for artist '{artist_name}'...")
+    progress_start(f"Spotify [{artist_name}]")
     try:
         token = get_spotify_token()
-        spotify_rows = spotify_artist_catalog(ARTIST_NAME, token)
+        spotify_rows = spotify_artist_catalog(artist_name, token)
         progress_end()
         print(f"[STAGE] Spotify artist search done -> {len(spotify_rows)} songs")
         msgs.append(f"Spotify={len(spotify_rows)}")
@@ -1345,33 +1370,34 @@ def run_artist_name_tab(wb):
     if rows:
         write_sheet(wb, "Specific Songs", rows)
     else:
-        write_sheet(wb, "Specific Songs", [], f"No rows for artist: {ARTIST_NAME}")
-    return f"Specific Songs ({ARTIST_NAME}): {len(rows)} unique rows [{', '.join(msgs)}]"
+        write_sheet(wb, "Specific Songs", [], f"No rows for artist: {artist_name}")
+    return f"Specific Songs ({artist_name}): {len(rows)} unique rows [{', '.join(msgs)}]"
 
 
 def run_extraction(artist_name=None, apple_ids=None, spotify_ids=None, output_path=None):
-    global ARTIST_NAME, APPLE_MUSIC_IDS, SPOTIFY_TRACK_IDS, OUTPUT_XLSX
-    if artist_name is not None:
-        ARTIST_NAME = artist_name
-    if apple_ids is not None:
-        APPLE_MUSIC_IDS = apple_ids if isinstance(apple_ids, list) else [apple_ids]
-    if spotify_ids is not None:
-        SPOTIFY_TRACK_IDS = spotify_ids if isinstance(spotify_ids, list) else [spotify_ids]
-    if output_path is not None:
-        OUTPUT_XLSX = output_path
+    # All inputs flow through locals -> no module globals -> concurrency-safe.
+    artist = artist_name if artist_name is not None else ARTIST_NAME
+    apple_music_ids = apple_ids if apple_ids is not None else APPLE_MUSIC_IDS
+    spotify_track_ids = spotify_ids if spotify_ids is not None else SPOTIFY_TRACK_IDS
+    if not isinstance(apple_music_ids, list):
+        apple_music_ids = [apple_music_ids]
+    if not isinstance(spotify_track_ids, list):
+        spotify_track_ids = [spotify_track_ids]
+    out_path = output_path if output_path is not None else OUTPUT_XLSX
+
     wb = Workbook()
     wb.remove(wb.active)
-    results = [run_apple_ids_tab(wb), run_spotify_ids_tab(wb), run_artist_name_tab(wb)]
-    wb.save(OUTPUT_XLSX)
+    results = [
+        run_apple_ids_tab(wb, apple_music_ids, spotify_track_ids),
+        run_spotify_ids_tab(wb, apple_music_ids, spotify_track_ids),
+        run_artist_name_tab(wb, artist),
+    ]
+    wb.save(out_path)
     return results
 
 
 def main():
-    wb = Workbook()
-    wb.remove(wb.active)
-    results = [run_apple_ids_tab(wb), run_spotify_ids_tab(wb), run_artist_name_tab(wb)]
-    wb.save(OUTPUT_XLSX)
-    print("\n".join(results))
+    run_extraction()
     print(f"\nSaved -> {OUTPUT_XLSX}")
 
 

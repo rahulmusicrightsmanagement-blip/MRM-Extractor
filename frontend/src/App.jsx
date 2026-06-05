@@ -60,6 +60,17 @@ export default function App() {
 
   const goExtract = () => { setPrefill(null); setPage("extract"); };
 
+  // Password-reset deep link: ?reset=<token> -> show the reset screen.
+  const [resetToken, setResetToken] = useState(() => {
+    try { return new URLSearchParams(window.location.search).get("reset") || ""; }
+    catch { return ""; }
+  });
+  const clearReset = () => {
+    setResetToken("");
+    try { window.history.replaceState({}, "", window.location.pathname); } catch {}
+  };
+  if (resetToken) return <ResetPassword token={resetToken} onDone={clearReset} />;
+
   if (!token || !user) return <Login onLogin={saveAuth} />;
 
   return (
@@ -208,6 +219,8 @@ function Login({ onLogin }) {
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [showGuide, setShowGuide] = useState(false);
+  const [mode, setMode] = useState("signin"); // "signin" | "forgot"
+  const [sent, setSent] = useState(false);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -225,6 +238,25 @@ function Login({ onLogin }) {
       setErr(String(e.message || e));
     } finally { setBusy(false); }
   };
+
+  const submitForgot = async (e) => {
+    e.preventDefault();
+    setErr(""); setBusy(true);
+    try {
+      const r = await fetch(`${API}/api/auth/forgot`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.detail || "Could not send reset email");
+      setSent(true);
+    } catch (e) {
+      setErr(String(e.message || e));
+    } finally { setBusy(false); }
+  };
+
+  const backToSignin = () => { setMode("signin"); setErr(""); setSent(false); };
 
   if (showGuide) {
     return (
@@ -261,34 +293,192 @@ function Login({ onLogin }) {
       <div className="w-full max-w-md fade-in">
         <div className="mb-8 text-center">
           <img src="/Original%20on%20transparent.png" alt="MRM" style={{ height: 56, width: "auto", margin: "0 auto 18px", objectFit: "contain" }} />
-          <h1 className="text-3xl font-bold tracking-tight" style={{ color: T.ink }}>Welcome back</h1>
-          <p className="mt-2 text-sm" style={{ color: T.ink2 }}>Sign in to continue to MRM Extractor</p>
+          <h1 className="text-3xl font-bold tracking-tight" style={{ color: T.ink }}>
+            {mode === "forgot" ? "Forgot password" : "Welcome back"}
+          </h1>
+          <p className="mt-2 text-sm" style={{ color: T.ink2 }}>
+            {mode === "forgot"
+              ? "Enter your email and we'll send you a reset link"
+              : "Sign in to continue to MRM Extractor"}
+          </p>
         </div>
-        <form
-          onSubmit={submit}
+
+        {mode === "signin" ? (
+          <form
+            onSubmit={submit}
+            className="rounded-2xl p-7"
+            style={{ background: T.surface, border: `1px solid ${T.border}`, boxShadow: `0 24px 48px ${T.p4}26` }}
+          >
+            <Field label="Email" value={email} onChange={setEmail} placeholder="you@example.com" type="email" disabled={busy} />
+            <div className="h-4" />
+            <Field label="Password" value={password} onChange={setPassword} placeholder="••••••••" type="password" disabled={busy} />
+            <div className="mt-2 text-right">
+              <button
+                type="button"
+                onClick={() => { setMode("forgot"); setErr(""); }}
+                className="text-xs font-semibold transition hover:opacity-80"
+                style={{ color: T.ink2 }}
+              >
+                Forgot password?
+              </button>
+            </div>
+            {err && <Alert>{err}</Alert>}
+            <button
+              type="submit"
+              disabled={busy}
+              className="mt-6 w-full rounded-xl py-3 text-sm font-semibold transition disabled:opacity-60"
+              style={{ background: T.ink, color: "#fff", boxShadow: `0 8px 20px ${T.ink}33` }}
+            >
+              {busy ? "Signing in…" : "Sign in"}
+            </button>
+          </form>
+        ) : (
+          <form
+            onSubmit={submitForgot}
+            className="rounded-2xl p-7"
+            style={{ background: T.surface, border: `1px solid ${T.border}`, boxShadow: `0 24px 48px ${T.p4}26` }}
+          >
+            {sent ? (
+              <div className="text-center py-4">
+                <div
+                  className="mx-auto mb-4 flex items-center justify-center rounded-full"
+                  style={{ width: 48, height: 48, background: T.p2, color: T.ink }}
+                >
+                  <IconMail />
+                </div>
+                <p className="text-sm font-medium" style={{ color: T.ink }}>
+                  If an account exists for <b>{email}</b>, a reset link is on its way.
+                </p>
+                <p className="mt-2 text-xs" style={{ color: T.ink3 }}>
+                  Check your inbox (and spam). The link expires in 30 minutes.
+                </p>
+              </div>
+            ) : (
+              <>
+                <Field label="Email" value={email} onChange={setEmail} placeholder="you@example.com" type="email" disabled={busy} />
+                {err && <Alert>{err}</Alert>}
+                <button
+                  type="submit"
+                  disabled={busy}
+                  className="mt-6 w-full rounded-xl py-3 text-sm font-semibold transition disabled:opacity-60"
+                  style={{ background: T.ink, color: "#fff", boxShadow: `0 8px 20px ${T.ink}33` }}
+                >
+                  {busy ? "Sending…" : "Send reset link"}
+                </button>
+              </>
+            )}
+            <button
+              type="button"
+              onClick={backToSignin}
+              className="mt-4 w-full flex items-center justify-center gap-2 text-sm font-semibold transition hover:opacity-80"
+              style={{ color: T.ink2 }}
+            >
+              <IconArrowLeft /> Back to sign in
+            </button>
+          </form>
+        )}
+
+        {mode === "signin" && (
+          <button
+            onClick={() => setShowGuide(true)}
+            className="mt-5 w-full flex items-center justify-center gap-2 text-sm font-semibold transition hover:opacity-80"
+            style={{ color: T.ink2 }}
+          >
+            <IconBook /> New here? Read the guide
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RESET PASSWORD (deep link ?reset=<token>)
+// ─────────────────────────────────────────────────────────────────────────────
+function ResetPassword({ token, onDone }) {
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setErr("");
+    if (password.length < 6) { setErr("Password must be at least 6 characters"); return; }
+    if (password !== confirm) { setErr("Passwords do not match"); return; }
+    setBusy(true);
+    try {
+      const r = await fetch(`${API}/api/auth/reset`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, password }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.detail || "Could not reset password");
+      setDone(true);
+    } catch (e) {
+      setErr(String(e.message || e));
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="min-h-screen w-full flex items-center justify-center p-6">
+      <div className="w-full max-w-md fade-in">
+        <div className="mb-8 text-center">
+          <img src="/Original%20on%20transparent.png" alt="MRM" style={{ height: 56, width: "auto", margin: "0 auto 18px", objectFit: "contain" }} />
+          <h1 className="text-3xl font-bold tracking-tight" style={{ color: T.ink }}>
+            {done ? "Password updated" : "Set a new password"}
+          </h1>
+          <p className="mt-2 text-sm" style={{ color: T.ink2 }}>
+            {done ? "You can now sign in with your new password" : "Choose a strong password for your account"}
+          </p>
+        </div>
+        <div
           className="rounded-2xl p-7"
           style={{ background: T.surface, border: `1px solid ${T.border}`, boxShadow: `0 24px 48px ${T.p4}26` }}
         >
-          <Field label="Email" value={email} onChange={setEmail} placeholder="you@example.com" type="email" disabled={busy} />
-          <div className="h-4" />
-          <Field label="Password" value={password} onChange={setPassword} placeholder="••••••••" type="password" disabled={busy} />
-          {err && <Alert>{err}</Alert>}
-          <button
-            type="submit"
-            disabled={busy}
-            className="mt-6 w-full rounded-xl py-3 text-sm font-semibold transition disabled:opacity-60"
-            style={{ background: T.ink, color: "#fff", boxShadow: `0 8px 20px ${T.ink}33` }}
-          >
-            {busy ? "Signing in…" : "Sign in"}
-          </button>
-        </form>
-        <button
-          onClick={() => setShowGuide(true)}
-          className="mt-5 w-full flex items-center justify-center gap-2 text-sm font-semibold transition hover:opacity-80"
-          style={{ color: T.ink2 }}
-        >
-          <IconBook /> New here? Read the guide
-        </button>
+          {done ? (
+            <div className="text-center py-4">
+              <div
+                className="mx-auto mb-4 flex items-center justify-center rounded-full"
+                style={{ width: 48, height: 48, background: T.p2, color: T.ink }}
+              >
+                <IconCheck />
+              </div>
+              <button
+                onClick={onDone}
+                className="mt-2 w-full rounded-xl py-3 text-sm font-semibold transition"
+                style={{ background: T.ink, color: "#fff", boxShadow: `0 8px 20px ${T.ink}33` }}
+              >
+                Go to sign in
+              </button>
+            </div>
+          ) : (
+            <form onSubmit={submit}>
+              <Field label="New password" value={password} onChange={setPassword} placeholder="At least 6 characters" type="password" disabled={busy} />
+              <div className="h-4" />
+              <Field label="Confirm password" value={confirm} onChange={setConfirm} placeholder="Re-enter password" type="password" disabled={busy} />
+              {err && <Alert>{err}</Alert>}
+              <button
+                type="submit"
+                disabled={busy}
+                className="mt-6 w-full rounded-xl py-3 text-sm font-semibold transition disabled:opacity-60"
+                style={{ background: T.ink, color: "#fff", boxShadow: `0 8px 20px ${T.ink}33` }}
+              >
+                {busy ? "Updating…" : "Update password"}
+              </button>
+              <button
+                type="button"
+                onClick={onDone}
+                className="mt-4 w-full flex items-center justify-center gap-2 text-sm font-semibold transition hover:opacity-80"
+                style={{ color: T.ink2 }}
+              >
+                <IconArrowLeft /> Back to sign in
+              </button>
+            </form>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -1494,5 +1684,6 @@ const IconCalendar = () => <SVG><rect x="2.5" y="3.5" width="11" height="10" rx=
 const IconMusic = () => <SVG><path d="M6 12V4l7-1v8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /><circle cx="5" cy="12" r="1.5" stroke="currentColor" strokeWidth="1.5" /><circle cx="12" cy="11" r="1.5" stroke="currentColor" strokeWidth="1.5" /></SVG>;
 const IconBook = () => <SVG><path d="M2.5 3.5A1 1 0 0 1 3.5 3H7a1.5 1.5 0 0 1 1 .5 1.5 1.5 0 0 1 1-.5h3.5a1 1 0 0 1 1 .5v8a1 1 0 0 1-1 .5H9a1.5 1.5 0 0 0-1 .5 1.5 1.5 0 0 0-1-.5H3.5a1 1 0 0 1-1-.5v-8zM8 3.5v9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" /></SVG>;
 const IconInfo = () => <SVG><circle cx="8" cy="8" r="6.2" stroke="currentColor" strokeWidth="1.4" /><path d="M8 7.2v3.3M8 5.2v.4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" /></SVG>;
+const IconMail = () => <SVG size={20}><rect x="2" y="3.5" width="12" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.4" /><path d="M2.5 4.5L8 8.5l5.5-4" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></SVG>;
 const IconEye = () => <SVG><path d="M1 8s2.5-4.5 7-4.5S15 8 15 8s-2.5 4.5-7 4.5S1 8 1 8z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round" /><circle cx="8" cy="8" r="2" stroke="currentColor" strokeWidth="1.4" /></SVG>;
 const IconEyeOff = () => <SVG><path d="M6.3 6.3A2 2 0 0 0 8 10a2 2 0 0 0 1.7-1M2.5 4.5C1.4 5.6 1 8 1 8s2.5 4.5 7 4.5c1.2 0 2.3-.3 3.2-.8M6.5 3.6A6.6 6.6 0 0 1 8 3.5C12.5 3.5 15 8 15 8a13 13 0 0 1-1.7 2.3M2 2l12 12" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></SVG>;

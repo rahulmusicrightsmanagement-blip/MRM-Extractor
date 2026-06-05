@@ -187,6 +187,50 @@ def _build_plain(rows, window_start_ist, window_end_ist):
     return "\n".join(lines)
 
 
+def send_password_reset(to_email: str, reset_url: str):
+    """Send a password-reset email containing the one-time reset link."""
+    if not (SENDER and APP_PW):
+        raise RuntimeError("GMAIL_SENDER / GMAIL_APP_PASSWORD must be set in .env")
+
+    msg = EmailMessage()
+    msg["Subject"] = "MRM Extractor — Reset your password"
+    msg["From"] = formataddr(("MRM Extractor", SENDER))
+    msg["To"] = to_email
+
+    plain = (
+        "You requested a password reset for MRM Extractor.\n\n"
+        f"Reset link: {reset_url}\n\n"
+        "This link expires in 30 minutes. If you didn't request this, ignore this email."
+    )
+    msg.set_content(plain)
+
+    html = f"""<!doctype html>
+<html><body style="margin:0;padding:0;background:#F7FDF3;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <div style="max-width:520px;margin:0 auto;padding:32px 20px;">
+    <div style="text-align:center;margin-bottom:24px;">
+      <div style="display:inline-block;padding:6px 14px;border-radius:999px;background:#DDF6D2;color:#1f3a25;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;">Password Reset</div>
+      <h1 style="font-size:24px;font-weight:800;color:#1f3a25;margin:14px 0 4px;">MRM Extractor</h1>
+    </div>
+    <div style="background:#fff;border:1px solid #B0DB9C66;border-radius:14px;padding:24px;">
+      <p style="font-size:14px;color:#1f3a25;margin:0 0 18px;">You requested a password reset. Click the button below to choose a new password.</p>
+      <div style="text-align:center;margin:24px 0;">
+        <a href="{escape(reset_url)}" style="display:inline-block;background:#1f3a25;color:#fff;font-size:14px;font-weight:700;text-decoration:none;padding:12px 28px;border-radius:10px;">Reset password</a>
+      </div>
+      <p style="font-size:12px;color:#6b8a76;margin:18px 0 0;word-break:break-all;">Or paste this link into your browser:<br><span style="color:#3d6b48;">{escape(reset_url)}</span></p>
+      <p style="font-size:12px;color:#6b8a76;margin:18px 0 0;">This link expires in 30 minutes. If you didn't request this, you can safely ignore this email.</p>
+    </div>
+  </div>
+</body></html>"""
+    msg.add_alternative(html, subtype="html")
+
+    ctx = ssl.create_default_context()
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ctx) as s:
+        s.login(SENDER, APP_PW)
+        s.send_message(msg)
+    print(f"[Email] password reset sent to {to_email}")
+    return {"sent_to": to_email}
+
+
 def send_weekly_digest(window_days: int = 7):
     if not (SENDER and APP_PW):
         raise RuntimeError("GMAIL_SENDER / GMAIL_APP_PASSWORD must be set in .env")
