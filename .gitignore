@@ -6,6 +6,8 @@ frontend/.env
 backend/.gdrive_token.json
 backend/gdrive_oauth_client.json
 backend/gdrive_service_account.json
+AuthKey_*.p8
+*.p8
 !.env.example
 !backend/.env.example
 !frontend/.env.example

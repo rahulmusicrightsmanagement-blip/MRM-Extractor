@@ -7,7 +7,7 @@ export default defineConfig({
   server: {
     // Listen on all interfaces so both localhost and 127.0.0.1 resolve in dev.
     host: true,
-    port: 5173,
+    port: 5174,
     strictPort: true,
   },
 })

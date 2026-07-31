@@ -102,6 +102,26 @@ export default function App() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// CREDIT — fixed bottom-right badge, shown on every screen (login included).
+// pointer-events-none so it can never intercept clicks on content beneath it.
+// ─────────────────────────────────────────────────────────────────────────────
+export function Credit() {
+  return (
+    <div
+      className="fixed bottom-3 right-3 z-50 pointer-events-none select-none rounded-full px-3 py-1.5 text-xs font-medium"
+      style={{
+        color: T.ink3,
+        background: "rgba(255, 255, 255, 0.7)",
+        backdropFilter: "blur(16px)",
+        border: `1px solid ${T.borderSoft}`,
+      }}
+    >
+      Developed by RDJ V.2.0
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // NAVBAR
 // ─────────────────────────────────────────────────────────────────────────────
 function Navbar({ user, page, setPage, onLogout }) {

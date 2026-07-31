@@ -1,7 +1,7 @@
 # Local full-stack test of MRM Extractor.
 #   docker compose --env-file backend/.env up --build
 # Backend  -> http://localhost:8000
-# Frontend -> http://localhost:5173
+# Frontend -> http://localhost:5174
 #
 # Backend secrets are supplied from backend/.env locally, or from Coolify
 # environment variables in production.
@@ -28,7 +28,7 @@ services:
       GMAIL_APP_PASSWORD: ${GMAIL_APP_PASSWORD:-}
       HOST: 0.0.0.0
       PORT: ${PORT:-8000}
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5174,http://127.0.0.1:5174,http://localhost:4173}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     restart: unless-stopped
@@ -41,7 +41,7 @@ services:
         # Coolify should set this to the deployed backend URL.
         VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
     ports:
-      - "${FRONTEND_PORT:-5173}:80"
+      - "${FRONTEND_PORT:-5174}:80"
     depends_on:
       - backend
     restart: unless-stopped
