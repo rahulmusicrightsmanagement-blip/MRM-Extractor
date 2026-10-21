@@ -52,6 +52,8 @@ export default function App() {
       artist: row.artist || "",
       apple: row.apple_ids || "",
       spotify: row.spotify_ids || "",
+      muso: row.muso_id || "",
+      platforms: row.platforms || null,
       autorun: true,
       ts: Date.now(),
     });
@@ -650,6 +652,8 @@ function Extractor({ token, prefill }) {
   const [artist, setArtist] = useState("");
   const [apple, setApple] = useState("");
   const [spotify, setSpotify] = useState("");
+  const [muso, setMuso] = useState("");
+  const [platforms, setPlatforms] = useState(DEFAULT_PLATFORMS);
   const [running, setRunning] = useState(false);
   const [queued, setQueued] = useState(false);
   const [stage, setStage] = useState("");
@@ -673,12 +677,17 @@ function Extractor({ token, prefill }) {
 
   const newRun = () => {
     reset();
-    setArtist(""); setApple(""); setSpotify("");
+    setArtist(""); setApple(""); setSpotify(""); setMuso(""); setPlatforms(DEFAULT_PLATFORMS);
     setStep(1);
   };
 
-  const startWith = async (a, ap, sp) => {
-    if (!a && !ap && !sp) { setError("Provide artist name or at least one ID."); return; }
+  const startWith = async (a, ap, sp, mu = "", pl = ALL_PLATFORMS) => {
+    const err = platformError(pl, a, ap, sp, mu);
+    if (err) { setError(err); return; }
+    // Don't send IDs for platforms that weren't picked.
+    if (!pl.includes("apple")) ap = "";
+    if (!pl.includes("spotify")) sp = "";
+    if (!pl.includes("muso")) mu = "";
     reset();
     setRunning(true);
     setStep(3);
@@ -686,7 +695,7 @@ function Extractor({ token, prefill }) {
       const r = await fetch(`${API}/api/extract`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ artist_name: a, apple_ids: ap, spotify_ids: sp }),
+        body: JSON.stringify({ artist_name: a, apple_ids: ap, spotify_ids: sp, muso_id: mu, platforms: pl }),
       });
       if (!r.ok) throw new Error((await r.json()).detail || "Failed to start");
       const { job_id } = await r.json();
@@ -698,14 +707,18 @@ function Extractor({ token, prefill }) {
     }
   };
 
-  const start = () => startWith(artist, apple, spotify);
+  const start = () => startWith(artist, apple, spotify, muso, platforms);
 
   useEffect(() => {
     if (!prefill || !prefill.ts) return;
     setArtist(prefill.artist || "");
     setApple(prefill.apple || "");
     setSpotify(prefill.spotify || "");
-    if (prefill.autorun && !running) startWith(prefill.artist || "", prefill.apple || "", prefill.spotify || "");
+    setMuso(prefill.muso || "");
+    // Old history rows have no platforms -> they ran everything.
+    const pl = prefill.platforms || ALL_PLATFORMS;
+    setPlatforms(pl);
+    if (prefill.autorun && !running) startWith(prefill.artist || "", prefill.apple || "", prefill.spotify || "", prefill.muso || "", pl);
   }, [prefill?.ts]);
 
   const openStream = (id) => {
@@ -780,20 +793,32 @@ function Extractor({ token, prefill }) {
     a.click();
   };
 
-  const canNext = artist.trim() || apple.trim() || spotify.trim();
+  const canNext = !platformError(platforms, artist, apple, spotify, muso);
 
   return (
     <div>
       <Stepper step={step} />
 
       {step === 1 && (
-        <Card title="Artist details" subtitle="Provide an artist name and IDs from Apple Music and Spotify. At least one is required.">
+        <Card title="Artist details" subtitle="Choose the platforms to pull from, then fill in the artist name and/or IDs.">
           <div className="space-y-5">
-            <Field label="Artist Name" value={artist} onChange={setArtist} placeholder="e.g. Joshua Singh" disabled={running} />
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-              <Field label="Apple Music Artist ID" value={apple} onChange={setApple} placeholder="1456574153" mono disabled={running} />
-              <Field label="Spotify Artist ID" value={spotify} onChange={setSpotify} placeholder="38HBNhl3BVneu8qCuG8wW9" mono disabled={running} />
-            </div>
+            <PlatformPicker value={platforms} onChange={setPlatforms} disabled={running} />
+            {(platforms.includes("apple") || platforms.includes("spotify")) && (
+              <Field label="Artist Name" value={artist} onChange={setArtist} placeholder="e.g. Joshua Singh" disabled={running} />
+            )}
+            {(platforms.includes("apple") || platforms.includes("spotify")) && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                {platforms.includes("apple") && (
+                  <Field label="Apple Music Artist ID" value={apple} onChange={setApple} placeholder="1456574153" mono disabled={running} />
+                )}
+                {platforms.includes("spotify") && (
+                  <Field label="Spotify Artist ID" value={spotify} onChange={setSpotify} placeholder="38HBNhl3BVneu8qCuG8wW9" mono disabled={running} />
+                )}
+              </div>
+            )}
+            {platforms.includes("muso") && (
+              <Field label="Muso Profile ID (paid, ~$0.02 per call)" value={muso} onChange={setMuso} placeholder="b8526d66-f657-4d5e-8161-05c0bf80f8c7 or muso.ai/profile/… URL" mono disabled={running} />
+            )}
           </div>
           {error && <Alert>{error}</Alert>}
           <div className="mt-6 flex justify-end">
@@ -812,9 +837,11 @@ function Extractor({ token, prefill }) {
       {step === 2 && (
         <Card title="Confirm extraction" subtitle="Review before running. Large catalogs (200+ tracks) can take 4–8 minutes.">
           <div className="rounded-xl p-5" style={{ background: T.surfaceTint, border: `1px solid ${T.borderSoft}` }}>
-            <Row label="Artist" value={artist || "—"} />
-            <Row label="Apple Music ID" value={apple || "—"} mono />
-            <Row label="Spotify ID" value={spotify || "—"} mono />
+            <Row label="Platforms" value={PLATFORM_OPTIONS.filter((o) => platforms.includes(o.id)).map((o) => o.label).join(", ")} />
+            {(platforms.includes("apple") || platforms.includes("spotify")) && <Row label="Artist" value={artist || "—"} />}
+            {platforms.includes("apple") && <Row label="Apple Music ID" value={apple || "—"} mono />}
+            {platforms.includes("spotify") && <Row label="Spotify ID" value={spotify || "—"} mono />}
+            {platforms.includes("muso") && <Row label="Muso ID" value={muso || "—"} mono />}
           </div>
           {error && <Alert>{error}</Alert>}
           <div className="mt-6 flex flex-wrap justify-between gap-3">
@@ -1616,6 +1643,55 @@ function Card({ title, subtitle, action, children }) {
         </div>
       )}
       {children}
+    </div>
+  );
+}
+
+const PLATFORM_OPTIONS = [
+  { id: "apple", label: "Apple Music" },
+  { id: "spotify", label: "Spotify" },
+  { id: "muso", label: "Muso", note: "paid" },
+];
+const ALL_PLATFORMS = PLATFORM_OPTIONS.map((o) => o.id);
+const DEFAULT_PLATFORMS = ["apple", "spotify"];
+
+// Returns why the form can't run yet, or "" when it can.
+function platformError(pl, artist, apple, spotify, muso) {
+  if (!pl.length) return "Pick at least one platform.";
+  if (pl.includes("muso") && !muso.trim()) return "Enter the Muso Profile ID.";
+  const catalog = pl.includes("apple") || pl.includes("spotify");
+  const hasId = (pl.includes("apple") && apple.trim()) || (pl.includes("spotify") && spotify.trim());
+  if (catalog && !artist.trim() && !hasId) return "Provide an artist name or an Apple/Spotify ID.";
+  return "";
+}
+
+function PlatformPicker({ value, onChange, disabled }) {
+  const toggle = (id) => onChange(value.includes(id) ? value.filter((v) => v !== id) : [...value, id]);
+  return (
+    <div>
+      <span className="block text-xs font-semibold uppercase tracking-wider mb-1.5" style={{ color: T.ink2 }}>Platforms</span>
+      <div className="flex flex-wrap gap-2">
+        {PLATFORM_OPTIONS.map((o) => {
+          const on = value.includes(o.id);
+          return (
+            <button
+              key={o.id}
+              type="button"
+              onClick={() => toggle(o.id)}
+              disabled={disabled}
+              aria-pressed={on}
+              className="rounded-xl px-4 py-2 text-sm font-semibold transition flex items-center gap-2 disabled:opacity-50"
+              style={on
+                ? { background: T.ink, color: "#fff", border: `1px solid ${T.ink}` }
+                : { background: T.surfaceTint, color: T.ink2, border: `1px solid ${T.border}` }}
+            >
+              <span aria-hidden>{on ? "✓" : "+"}</span>
+              {o.label}
+              {o.note && <span className="text-[10px] uppercase tracking-wider opacity-70">{o.note}</span>}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }

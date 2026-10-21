@@ -10,6 +10,7 @@ OUT = "SongExtraction.xlsx"
 DROP = set()
 SRC_SHEETS = ["Apple Music Songs", "Spotify Songs", "Specific Songs"]
 MERGE_SHEETS = ["Apple Music Songs", "Spotify Songs"]
+OPTIONAL_SHEETS = ["Muso Credits"]
 
 # === Styles ===
 HDR_FILL = PatternFill("solid", fgColor="1F4E78")
@@ -169,6 +170,16 @@ def run_merge(src_path=None, out_path=None):
             out_row.append(", ".join(vals[1:]) if len(vals) > 1 else None)
         ws_m.append(out_row)
     format_merged(ws_m, out_headers, col_kinds)
+    # Optional extra sheets (e.g. Muso, only when its API key is set) are copied as-is.
+    for sh in OPTIONAL_SHEETS:
+        if sh not in src_wb.sheetnames:
+            continue
+        src_ws = src_wb[sh]
+        headers = [c.value for c in src_ws[1]]
+        ws = out_wb.create_sheet(sh)
+        for row in src_ws.iter_rows(values_only=True):
+            ws.append(list(row))
+        format_plain(ws, headers)
     out_wb.save(out)
     return {"out": out, "merged_count": len(groups)}
 

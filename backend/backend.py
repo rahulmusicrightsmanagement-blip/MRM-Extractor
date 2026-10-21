@@ -112,6 +112,8 @@ class ExtractReq(BaseModel):
     artist_name: str = ""
     apple_ids: str = ""
     spotify_ids: str = ""
+    muso_id: str = ""
+    platforms: list[str] | None = None  # None -> all platforms (older clients)
 
 
 class LoginReq(BaseModel):
@@ -252,6 +254,8 @@ def run_job(job_id: str, req: ExtractReq):
             artist_name=artist or "Unknown",
             apple_ids=apple,
             spotify_ids=spotify,
+            muso_id=req.muso_id.strip(),
+            platforms=req.platforms,
             output_path=str(raw_path),
         )
         print("[STAGE] Building final Excel file (styling 4 sheets)...")
@@ -285,6 +289,8 @@ def run_job(job_id: str, req: ExtractReq):
                 "artist": artist,
                 "apple_ids": req.apple_ids.strip(),
                 "spotify_ids": req.spotify_ids.strip(),
+                "muso_id": req.muso_id.strip(),
+                "platforms": req.platforms,
                 "drive_link": info.get("drive_link", ""),
                 "drive_id": info.get("drive_id", ""),
                 "songs": merged_count,
@@ -421,7 +427,7 @@ def delete_user(user_id: str, admin=Depends(require_admin)):
 # ── EXTRACT (auth required) ──
 @app.post("/api/extract")
 def start_extract(req: ExtractReq, user=Depends(current_user)):
-    if not req.artist_name and not req.apple_ids and not req.spotify_ids:
+    if not req.artist_name and not req.apple_ids and not req.spotify_ids and not req.muso_id:
         raise HTTPException(400, "Provide artist name or IDs")
     job_id = uuid.uuid4().hex
     JOBS[job_id] = {
@@ -523,6 +529,8 @@ def history(user=Depends(current_user), limit: int = 200):
             "artist": d.get("artist", ""),
             "apple_ids": d.get("apple_ids", ""),
             "spotify_ids": d.get("spotify_ids", ""),
+            "muso_id": d.get("muso_id", ""),
+            "platforms": d.get("platforms"),
             "drive_link": d.get("drive_link", ""),
             "songs": d.get("songs", 0),
             "at": at.isoformat() if at else None,

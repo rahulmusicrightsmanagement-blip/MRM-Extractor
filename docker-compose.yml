@@ -13,6 +13,7 @@ services:
       context: ./backend
     environment:
       APPLE_DEVELOPER_TOKEN: ${APPLE_DEVELOPER_TOKEN:-}
+      MUSO_API_KEY: ${MUSO_API_KEY:-}
       SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
       SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}
       MONGO_URI: ${MONGO_URI:-}

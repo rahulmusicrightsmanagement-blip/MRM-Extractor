@@ -76,6 +76,7 @@ UNAVAILABLE = "Not exposed by public API"
 APPLE_DEVELOPER_TOKEN = os.getenv("APPLE_DEVELOPER_TOKEN", "eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IlVaNUdCUUY0NlMifQ.eyJpYXQiOjE3NjkxNzEwNDAsImV4cCI6MTc4NDcyMzA0MCwiaXNzIjoiNkNNWUY2Sjg5VyJ9.UQNmiQBX0IfmUtPW0aja4LumubpuVW0qzeL-aaJJRGVHlHTlaSGxU_xrAf-veMGUTRoX_0p1evP5GfSwkpkADg")
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "9c70cb9fd5674541aa34de7dc275008d")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "9933086ae1034042a1c185b384685094")
+MUSO_API_KEY = os.getenv("MUSO_API_KEY", "")  # Muso tab is skipped when unset (paid: ~$0.02/call)
 
 HEADERS = [
     "Type of Object", "Name of the Song / Title", "Name of the Album", "ISRC",
@@ -619,9 +620,9 @@ def spotify_artist_catalog(artist_name, token):
     print("[STAGE] Spotify — listing artist albums...")
     album_items = []
     offset = 0
-    for _ in range(20):
+    for _ in range(40):  # Spotify caps this endpoint at limit=10
         ad = spotify_fetch(
-            f"/artists/{artist_id}/albums?include_groups=album,single,appears_on,compilation&limit=20&offset={offset}{spotify_market_param('&')}",
+            f"/artists/{artist_id}/albums?include_groups=album,single,appears_on,compilation&limit=10&offset={offset}{spotify_market_param('&')}",
             token,
         )
         if not ad or not ad.get("items"):
@@ -629,7 +630,7 @@ def spotify_artist_catalog(artist_name, token):
         album_items.extend(ad["items"])
         if not ad.get("next"):
             break
-        offset += 20
+        offset += 10
         time.sleep(0.2)
 
     print(f"[Spotify] raw album count: {len(album_items)}")
@@ -677,9 +678,9 @@ def spotify_artist_catalog(artist_name, token):
 
     print("[STAGE] Spotify — broad track search for collaborations...")
     search_offset = 0
-    for _ in range(8):  # capped to keep runs fast
+    for _ in range(16):  # capped to keep runs fast; Spotify caps search at limit=10
         sr = spotify_fetch(
-            f"/search?q={requests.utils.quote(artist_name)}&type=track&limit=20&offset={search_offset}{spotify_market_param('&')}",
+            f"/search?q={requests.utils.quote(artist_name)}&type=track&limit=10&offset={search_offset}{spotify_market_param('&')}",
             token,
         )
         if not sr or not sr.get("tracks", {}).get("items"):
@@ -696,23 +697,13 @@ def spotify_artist_catalog(artist_name, token):
                 progress_tick()
         if not sr["tracks"].get("next"):
             break
-        search_offset += 20
+        search_offset += 10
         time.sleep(0.2)
 
     print(f"[STAGE] Spotify — {len(track_ids)} unique tracks found, fetching details...")
     print(f"[Spotify] unique track IDs: {len(track_ids)}")
 
-    track_list = []
-    for i in range(0, len(track_ids), 20):
-        batch = ",".join(track_ids[i:i + 20])
-        d = spotify_fetch(f"/tracks?ids={batch}{spotify_market_param('&')}", token)
-        if not d or not d.get("tracks"):
-            time.sleep(0.3)
-            continue
-        for t in d["tracks"]:
-            if t:
-                track_list.append(t)
-        time.sleep(0.3)
+    track_list = spotify_fetch_each("tracks", track_ids, token)
 
     print(f"[Spotify] full track objects: {len(track_list)}")
     print("[STAGE] Spotify — loading album metadata (labels, dates)...")
@@ -776,9 +767,9 @@ def spotify_classify_id(rid, token):
 def spotify_tracks_from_artist_id(artist_id, token):
     track_ids, track_seen = [], set()
     album_items, offset = [], 0
-    for _ in range(20):
+    for _ in range(40):  # Spotify caps this endpoint at limit=10
         ad = spotify_fetch(
-            f"/artists/{artist_id}/albums?include_groups=album,single,appears_on,compilation&limit=20&offset={offset}{spotify_market_param('&')}",
+            f"/artists/{artist_id}/albums?include_groups=album,single,appears_on,compilation&limit=10&offset={offset}{spotify_market_param('&')}",
             token,
         )
         if not ad or not ad.get("items"):
@@ -786,7 +777,7 @@ def spotify_tracks_from_artist_id(artist_id, token):
         album_items.extend(ad["items"])
         if not ad.get("next"):
             break
-        offset += 20
+        offset += 10
         time.sleep(0.2)
 
     seen, unique = set(), []
@@ -858,17 +849,7 @@ def spotify_resolve_track_ids(ids, token):
 
 def spotify_tracks_by_id(ids, token):
     resolved = spotify_resolve_track_ids(ids, token)
-    track_list = []
-    for i in range(0, len(resolved), 20):
-        batch = ",".join(resolved[i:i + 20])
-        d = spotify_fetch(f"/tracks?ids={batch}{spotify_market_param('&')}", token)
-        if not d or not d.get("tracks"):
-            time.sleep(0.3)
-            continue
-        for t in d["tracks"]:
-            if t:
-                track_list.append(t)
-        time.sleep(0.3)
+    track_list = spotify_fetch_each("tracks", resolved, token)
 
     print(f"[Spotify/IDs] tracks: {len(track_list)}")
     album_map = build_album_map(track_list, token)
@@ -1025,6 +1006,19 @@ def merge_credit_sources(*sources):
 
 
 # ── SPOTIFY ENRICHMENT ──
+# Spotify blocks the batch endpoints (/tracks?ids=, /albums?ids=, /artists?ids=)
+# with 403 for development-mode apps, so fetch each item individually.
+def spotify_fetch_each(kind, ids, token):
+    market = spotify_market_param('?') if kind != "artists" else ""
+    out = []
+    for rid in ids:
+        d = spotify_fetch(f"/{kind}/{rid}{market}", token)
+        if d and d.get("id"):
+            out.append(d)
+        time.sleep(0.1)
+    return out
+
+
 def build_album_map(tracks, token):
     ids, seen = [], set()
     for t in tracks:
@@ -1032,18 +1026,7 @@ def build_album_map(tracks, token):
         if aid and aid not in seen:
             ids.append(aid)
             seen.add(aid)
-    m = {}
-    for j in range(0, len(ids), 20):
-        batch = ",".join(ids[j:j + 20])
-        d = spotify_fetch(f"/albums?ids={batch}{spotify_market_param('&')}", token)
-        if not d or not d.get("albums"):
-            time.sleep(0.3)
-            continue
-        for al in d["albums"]:
-            if al:
-                m[al["id"]] = al
-        time.sleep(0.2)
-    return m
+    return {al["id"]: al for al in spotify_fetch_each("albums", ids, token)}
 
 
 def build_artist_map(tracks, token):
@@ -1053,18 +1036,7 @@ def build_artist_map(tracks, token):
             if a and a.get("id") and a["id"] not in seen:
                 ids.append(a["id"])
                 seen.add(a["id"])
-    m = {}
-    for k in range(0, len(ids), 20):
-        batch = ",".join(ids[k:k + 20])
-        d = spotify_fetch(f"/artists?ids={batch}", token)
-        if not d or not d.get("artists"):
-            time.sleep(0.3)
-            continue
-        for ar in d["artists"]:
-            if ar:
-                m[ar["id"]] = ar
-        time.sleep(0.2)
-    return m
+    return {ar["id"]: ar for ar in spotify_fetch_each("artists", ids, token)}
 
 
 def spotify_label_or_copyright(album):
@@ -1338,30 +1310,35 @@ def merge_unique(apple_rows, spotify_rows):
     return [merged[k] for k in order]
 
 
-def run_artist_name_tab(wb, artist_name):
+def run_artist_name_tab(wb, artist_name, use_apple=True, use_spotify=True):
     apple_rows, spotify_rows = [], []
     msgs = []
-    print(f"[STAGE] Searching Apple Music for artist '{artist_name}'...")
-    progress_start(f"Apple [{artist_name}]")
-    try:
-        apple_rows = apple_artist_catalog(artist_name)
-        progress_end()
-        print(f"[STAGE] Apple artist search done -> {len(apple_rows)} songs")
-        msgs.append(f"Apple={len(apple_rows)}")
-    except Exception as e:
-        progress_end()
-        msgs.append(f"Apple ERROR: {e}")
-    print(f"[STAGE] Searching Spotify for artist '{artist_name}'...")
-    progress_start(f"Spotify [{artist_name}]")
-    try:
-        token = get_spotify_token()
-        spotify_rows = spotify_artist_catalog(artist_name, token)
-        progress_end()
-        print(f"[STAGE] Spotify artist search done -> {len(spotify_rows)} songs")
-        msgs.append(f"Spotify={len(spotify_rows)}")
-    except Exception as e:
-        progress_end()
-        msgs.append(f"Spotify ERROR: {e}")
+    if not artist_name or not (use_apple or use_spotify):
+        write_sheet(wb, "Specific Songs", [], "Artist-name search not run (no name, or Apple/Spotify not selected).")
+        return "Specific Songs: skipped"
+    if use_apple:
+        print(f"[STAGE] Searching Apple Music for artist '{artist_name}'...")
+        progress_start(f"Apple [{artist_name}]")
+        try:
+            apple_rows = apple_artist_catalog(artist_name)
+            progress_end()
+            print(f"[STAGE] Apple artist search done -> {len(apple_rows)} songs")
+            msgs.append(f"Apple={len(apple_rows)}")
+        except Exception as e:
+            progress_end()
+            msgs.append(f"Apple ERROR: {e}")
+    if use_spotify:
+        print(f"[STAGE] Searching Spotify for artist '{artist_name}'...")
+        progress_start(f"Spotify [{artist_name}]")
+        try:
+            token = get_spotify_token()
+            spotify_rows = spotify_artist_catalog(artist_name, token)
+            progress_end()
+            print(f"[STAGE] Spotify artist search done -> {len(spotify_rows)} songs")
+            msgs.append(f"Spotify={len(spotify_rows)}")
+        except Exception as e:
+            progress_end()
+            msgs.append(f"Spotify ERROR: {e}")
 
     print("[STAGE] Merging Apple + Spotify by ISRC...")
     rows = merge_unique(apple_rows, spotify_rows)
@@ -1374,7 +1351,186 @@ def run_artist_name_tab(wb, artist_name):
     return f"Specific Songs ({artist_name}): {len(rows)} unique rows [{', '.join(msgs)}]"
 
 
-def run_extraction(artist_name=None, apple_ids=None, spotify_ids=None, output_path=None):
+# ── MUSO (verified credits) ──
+MUSO_BASE = "https://api.platform.muso.ai/v1"
+MUSO_HEADERS = [
+    "Type of Object", "Name of the Song / Title", "Name of the Album", "ISRC",
+    "Song Release Date", "Main Artist (All)", "Singer", "Lyricist", "Composer",
+    "Music Label", "Producer", "Recording Engineer", "Mixing Engineer", "Genre",
+    "Duration (mm:ss)", "Song Link",
+    "Artist's Role(s)", "Featured Artist", "Mastering Engineer", "Publisher",
+    "Record Label (credited org)", "Other Credits", "UPC", "Album Track Count",
+    "P-Line", "C-Line", "Popularity (0-100)", "BPM", "Key",
+    "Spotify Track ID", "Muso Track ID",
+]
+# Muso child role -> output column. Unmapped roles go to "Other Credits" as "Name (Role)".
+MUSO_ROLE_COL = {
+    "Vocals": "Singer", "Lyricist": "Lyricist", "Composer": "Composer", "Co-Writer": "Composer",
+    "Producer": "Producer", "Co-Producer": "Producer", "Engineer": "Recording Engineer",
+    "Recording Engineer": "Recording Engineer", "Mixing": "Mixing Engineer",
+    "Mixing Engineer": "Mixing Engineer", "Mastering": "Mastering Engineer",
+    "Mastering Engineer": "Mastering Engineer", "Publisher": "Publisher",
+    "Featured Artist": "Featured Artist", "Record Label": "Record Label (credited org)",
+}
+
+
+def muso_fetch(path, calls, params=None, body=None, _attempt=0):
+    calls[0] += 1  # every request is billed, including retries
+    method = "POST" if body is not None else "GET"
+    try:
+        r = requests.request(method, MUSO_BASE + path, params=params, json=body,
+                             headers={"x-api-key": MUSO_API_KEY}, timeout=30)
+    except requests.RequestException as e:
+        if _attempt < 3:
+            time.sleep(1 + _attempt)
+            return muso_fetch(path, calls, params, body, _attempt + 1)
+        print(f"[Muso] network error {path}: {e}")
+        return None
+    if r.status_code == 429 and _attempt < 5:
+        time.sleep(float(r.headers.get("Retry-After") or 2))
+        return muso_fetch(path, calls, params, body, _attempt + 1)
+    if r.status_code >= 500 and _attempt < 3:
+        time.sleep(1 + _attempt)
+        return muso_fetch(path, calls, params, body, _attempt + 1)
+    if r.status_code != 200:
+        print(f"[Muso] {r.status_code} {path}: {r.text[:200]}")
+        return None
+    return r.json().get("data")
+
+
+def parse_muso_track(item, track, album):
+    buckets, other, primaries = {}, [], []
+    for group in track.get("credits") or []:
+        for cr in group.get("credits") or []:
+            names = [c["name"] for c in cr.get("collaborators") or [] if c.get("name")]
+            role = cr.get("child") or ""
+            if role == "Primary Artist":
+                primaries += names
+                continue
+            col = MUSO_ROLE_COL.get(role)
+            if col:
+                for n in names:
+                    lst = buckets.setdefault(col, [])
+                    if n not in lst:
+                        lst.append(n)
+            else:
+                other += [f"{n} ({role})" for n in names]
+
+    def joined(col, fallback="N/A"):
+        return ", ".join(buckets.get(col) or []) or fallback
+
+    tc = album.get("trackCount") or 0
+    obj_type = "Single" if 0 < tc <= 3 else "EP" if 3 < tc <= 6 else "Album" if tc else "N/A"
+    dur = track.get("duration")
+    sid = (track.get("spotifyIds") or [None])[0] or (item.get("track") or {}).get("spotifyId")
+    pop = track.get("popularity")
+
+    row = {
+        "Type of Object": obj_type,
+        "Name of the Song / Title": safe(track.get("title")),
+        "Name of the Album": safe((track.get("album") or item.get("album") or {}).get("title")),
+        "ISRC": arr2str(track.get("isrcs")),
+        "Song Release Date": safe(track.get("releaseDate") or item.get("releaseDate")),
+        "Main Artist (All)": arr2str([a.get("name") for a in track.get("artists") or []]),
+        # No "Vocals" credit -> assume the primary artists sang it.
+        "Singer": joined("Singer", arr2str(dedupe(primaries))),
+        "Lyricist": joined("Lyricist"),
+        "Composer": joined("Composer"),
+        "Music Label": safe(track.get("label") or album.get("label")),
+        "Producer": joined("Producer"),
+        "Recording Engineer": joined("Recording Engineer"),
+        "Mixing Engineer": joined("Mixing Engineer"),
+        "Genre": "Not provided by Muso",
+        "Duration (mm:ss)": f"{dur // 60}:{dur % 60:02d}" if isinstance(dur, int) and dur else "N/A",
+        "Song Link": f"https://open.spotify.com/track/{sid}" if sid else "N/A",
+        "Artist's Role(s)": arr2str([c.get("child") for c in item.get("credits") or []]),
+        "Featured Artist": joined("Featured Artist"),
+        "Mastering Engineer": joined("Mastering Engineer"),
+        "Publisher": joined("Publisher", safe(track.get("publisher"))),
+        "Record Label (credited org)": joined("Record Label (credited org)"),
+        "Other Credits": arr2str(other),
+        "UPC": safe(album.get("upc")),
+        "Album Track Count": tc or "N/A",
+        "P-Line": safe(track.get("p_line")),
+        "C-Line": safe(track.get("c_line")),
+        "Popularity (0-100)": pop if pop is not None else "N/A",
+        "BPM": safe(track.get("bpm")),
+        "Key": safe(track.get("key")),
+        "Spotify Track ID": safe(sid),
+        "Muso Track ID": safe(track.get("id")),
+    }
+    return [row[h] for h in MUSO_HEADERS]
+
+
+def muso_profile_id(text):
+    m = re.search(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", text or "")
+    return m.group(0).lower() if m else None
+
+
+def muso_artist_catalog(muso_id, calls):
+    pid = muso_profile_id(muso_id)
+    if not pid:
+        raise RuntimeError(f"Not a Muso profile ID or URL: '{muso_id}'")
+    print(f"[Muso] profile: {pid}")
+
+    items, offset = [], 0
+    while True:
+        page = muso_fetch(f"/profile/{pid}/credits", calls, params={"limit": 50, "offset": offset})
+        if not page or not page.get("items"):
+            break
+        items.extend(page["items"])
+        offset += 50
+        if offset >= (page.get("totalCount") or 0):
+            break
+    print(f"[STAGE] Muso — {len(items)} credited songs, fetching full credits...")
+
+    album_ids = dedupe([(it.get("album") or {}).get("id") for it in items])
+    pool = _pool_kwargs()
+    # 4 workers stays under the Start tier's 5 req/sec; 429s are retried anyway.
+    with ThreadPoolExecutor(max_workers=4, **pool) as ex:
+        tracks = list(ex.map(lambda it: muso_fetch(f"/track/id/{it['track']['id']}", calls) or {}, items))
+        albums = dict(zip(album_ids, ex.map(lambda a: muso_fetch(f"/album/id/{a}", calls) or {}, album_ids)))
+
+    rows = []
+    for it, tr in zip(items, tracks):
+        if not tr:
+            tr = dict(it.get("track") or {}, album=it.get("album"), artists=it.get("artists"),
+                      label=it.get("label"), p_line=it.get("p_line"), c_line=it.get("c_line"))
+        rows.append(parse_muso_track(it, tr, albums.get((it.get("album") or {}).get("id")) or {}))
+        progress_tick()
+    return rows
+
+
+def run_muso_tab(wb, muso_id):
+    # Opt-in per job: Muso is billed per call, so it only runs when a profile ID is given.
+    if not muso_id:
+        return "Muso Credits: skipped (no Muso ID)"
+    if not MUSO_API_KEY:
+        write_sheet(wb, "Muso Credits", [], "MUSO_API_KEY is not set on the server.", headers=MUSO_HEADERS)
+        return "Muso Credits: skipped (MUSO_API_KEY not set)"
+    print("[STAGE] Fetching Muso credits...")
+    progress_start("Muso")
+    calls = [0]
+    try:
+        rows = muso_artist_catalog(muso_id, calls)
+        progress_end()
+        print(f"[STAGE] Muso done -> {len(rows)} songs ({calls[0]} API calls, ~${calls[0] * 0.02:.2f})")
+        if rows:
+            write_sheet(wb, "Muso Credits", rows, headers=MUSO_HEADERS)
+        else:
+            write_sheet(wb, "Muso Credits", [], f"No Muso credits for profile: {muso_id}", headers=MUSO_HEADERS)
+        return f"Muso Credits: {len(rows)} rows"
+    except Exception as e:
+        progress_end()
+        print(f"[Muso] failed after {calls[0]} API calls: {e}")
+        write_sheet(wb, "Muso Credits", [], f"Muso extraction failed:\n{e}", headers=MUSO_HEADERS)
+        return f"Muso Credits: ERROR - {e}"
+
+
+PLATFORMS = ("apple", "spotify", "muso")
+
+
+def run_extraction(artist_name=None, apple_ids=None, spotify_ids=None, output_path=None, muso_id=None, platforms=None):
     # All inputs flow through locals -> no module globals -> concurrency-safe.
     artist = artist_name if artist_name is not None else ARTIST_NAME
     apple_music_ids = apple_ids if apple_ids is not None else APPLE_MUSIC_IDS
@@ -1387,11 +1543,25 @@ def run_extraction(artist_name=None, apple_ids=None, spotify_ids=None, output_pa
 
     wb = Workbook()
     wb.remove(wb.active)
-    results = [
-        run_apple_ids_tab(wb, apple_music_ids, spotify_track_ids),
-        run_spotify_ids_tab(wb, apple_music_ids, spotify_track_ids),
-        run_artist_name_tab(wb, artist),
-    ]
+    # None -> every platform (old callers / CLI). Unselected platforms are never called.
+    chosen = set(platforms) if platforms is not None else set(PLATFORMS)
+    use_apple, use_spotify = "apple" in chosen, "spotify" in chosen
+    if not use_apple:
+        apple_music_ids = []
+    if not use_spotify:
+        spotify_track_ids = []
+    results = []
+    for name, on, run in (
+        ("Apple Music Songs", use_apple, lambda: run_apple_ids_tab(wb, apple_music_ids, spotify_track_ids)),
+        ("Spotify Songs", use_spotify, lambda: run_spotify_ids_tab(wb, apple_music_ids, spotify_track_ids)),
+    ):
+        if on:
+            results.append(run())
+        else:
+            write_sheet(wb, name, [], "Platform not selected for this extraction.")
+            results.append(f"{name}: skipped (not selected)")
+    results.append(run_artist_name_tab(wb, artist, use_apple, use_spotify))
+    results.append(run_muso_tab(wb, muso_id if "muso" in chosen else None))
     wb.save(out_path)
     return results
 
