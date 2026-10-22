@@ -1,0 +1,1 @@
+14:44:15 DONE rows=639 calls=1006 (~$20.12) stopped=False 

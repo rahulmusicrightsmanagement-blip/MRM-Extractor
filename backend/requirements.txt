@@ -10,3 +10,6 @@ email-validator
 google-api-python-client
 google-auth
 apscheduler
+python-multipart
+xlsxwriter
+google-auth-httplib2

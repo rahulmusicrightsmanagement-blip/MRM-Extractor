@@ -15,13 +15,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from bson import ObjectId
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, EmailStr
 
 import song_extractor
 import merge_isrc
+import song_merge
+import merge_projects
 import gdrive
 import email_digest
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -528,6 +531,82 @@ def history(user=Depends(current_user), limit: int = 200):
             "at": at.isoformat() if at else None,
         })
     return out
+
+
+# ── SONG MERGE (upload an Excel -> ISRC merge + work-level merge suggestions) ──
+# Each merge is a project saved in Google Drive under "Song Merge/<client>/".
+class MergeDecisionsReq(BaseModel):
+    decisions: dict = {}
+
+
+def _merge_call(fn, *args):
+    try:
+        return fn(*args)
+    except (song_merge.MergeError, merge_projects.ProjectError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/merge/analyze")
+async def merge_analyze(
+    file: UploadFile = File(...),
+    client_name: str = Form(default=""),
+    sheet: str = Form(default=""),
+    user=Depends(current_user),
+):
+    data = await file.read()
+    return await run_in_threadpool(
+        _merge_call, merge_projects.create, data, file.filename or "upload.xlsx",
+        client_name, user["email"], sheet or None,
+    )
+
+
+@app.get("/api/merge/projects")
+def merge_list(user=Depends(current_user)):
+    return _merge_call(merge_projects.list_projects)
+
+
+@app.get("/api/merge/projects/{project_id}")
+def merge_open(project_id: str, sheet: str = Query(default=""), user=Depends(current_user)):
+    return _merge_call(merge_projects.open_project, project_id, sheet or None)
+
+
+@app.put("/api/merge/projects/{project_id}/decisions")
+def merge_save(project_id: str, req: MergeDecisionsReq, user=Depends(current_user)):
+    return _merge_call(merge_projects.save_decisions, project_id, req.decisions or {})
+
+
+@app.get("/api/merge/projects/{project_id}/compare")
+def merge_compare(project_id: str, records: str = Query(default=""), user=Depends(current_user)):
+    rids = [int(x) for x in records.split(",") if x.strip().isdigit()][:30]
+    return _merge_call(merge_projects.compare, project_id, rids)
+
+
+class MergeNamesReq(BaseModel):
+    names: list[str] = []
+
+
+@app.put("/api/merge/projects/{project_id}/client-names")
+def merge_client_names(project_id: str, req: MergeNamesReq, user=Depends(current_user)):
+    return _merge_call(merge_projects.set_match_names, project_id, req.names)
+
+
+@app.delete("/api/merge/projects/{project_id}")
+def merge_delete(project_id: str, user=Depends(current_user)):
+    owner = _merge_call(merge_projects.owner_of, project_id)
+    if user.get("role") != "admin" and owner != user["email"]:
+        raise HTTPException(403, "Only the person who created it or an admin can delete it")
+    _merge_call(merge_projects.delete, project_id)
+    return {"ok": True}
+
+
+@app.post("/api/merge/projects/{project_id}/download")
+def merge_download(project_id: str, req: MergeDecisionsReq, user=Depends(current_user)):
+    data, name = _merge_call(merge_projects.download, project_id, req.decisions or {})
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{slugify(Path(name).stem)}.xlsx"'},
+    )
 
 
 @app.get("/")
