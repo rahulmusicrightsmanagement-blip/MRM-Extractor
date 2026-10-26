@@ -40,6 +40,14 @@ ALBUM = "Name of the Album"
 SINGER = "Singer"
 DATE = "Song Release Date"
 WRITER_COLS = ("Lyricist", "Author", "Composer")
+TYPE = "Type"
+MANUAL_TYPE = "Manual Type"
+COVER_OF = "Covers / Remix Song name"
+TYPE_COLS = (TYPE, MANUAL_TYPE, COVER_OF)  # written by this tool, after the sheet's own columns
+# Dropdown choices for Manual Type (Excel list items must not contain commas)
+MANUAL_TYPES = ["Original", "Re-release", "Remix", "Lofi", "Jhankar", "Slowed / Reverb", "Reprise",
+                "Unplugged / Acoustic", "Live", "Instrumental", "Cover", "Recreated", "Medley / Mashup",
+                "Male / Female Version", "Sad / Happy Version", "Other"]
 
 # Uploaded sheets may use other header names; map them onto the app's own
 HEADER_ALIASES = {
@@ -52,6 +60,10 @@ HEADER_ALIASES = {
     "Author": ["author", "authors", "author(s)"],
     "Composer": ["composer", "composers", "composer(s)", "music", "music by", "music director"],
     DATE: ["song release date", "release date", "date", "released"],
+    TYPE: ["type", "version type", "song type"],
+    MANUAL_TYPE: ["manual type"],
+    COVER_OF: ["covers / remix song name", "cover / remix song name", "covers/remix song name",
+               "cover of", "remix of"],
 }
 _ALIAS_LOOKUP = {a: canon for canon, aliases in HEADER_ALIASES.items() for a in aliases}
 # Sheets this tool writes; never treated as input when a merged file is re-uploaded
@@ -142,6 +154,80 @@ def _primary_order(rows, idxs):
     return sorted(idxs, key=score)
 
 
+def _release(rows, idxs):
+    dates = sorted(str(rows[i].get(DATE)) for i in idxs
+                   if re.match(r"\d{4}", str(rows[i].get(DATE) or "")))
+    return dates[0] if dates else ""
+
+
+def _sheet_value(rows, idxs, col):
+    for i in idxs:
+        v = rows[i].get(col)
+        if not is_placeholder(v) and str(v).strip():
+            return str(v).strip()
+    return ""
+
+
+def assign_types(rows, records, rids):
+    """Type of each recording among the versions of one song.
+    A Type given in the uploaded sheet is kept as written. Otherwise the title's
+    version tag decides (Lofi, Remix, Jhankar, ...); of the untagged versions the
+    earliest release is the Original and the rest are Re-release."""
+    out, plain = {}, []
+    for r in rids:
+        t = _sheet_value(rows, records[r], TYPE)
+        if not t:
+            vt = version_type(rows[records[r][0]].get(TITLE))
+            t = "" if vt == "Original / Re-release" else vt
+        if t:
+            out[r] = t
+        else:
+            plain.append(r)
+    has_original = any(t.casefold() == "original" for t in out.values())
+    heads = {records[r][0]: r for r in plain}
+    for n, i in enumerate(_primary_order(rows, list(heads))):
+        out[heads[i]] = "Re-release" if n or has_original else "Original"
+    return out
+
+
+def record_types(rows, records, suggestions):
+    """Type of every recording: versions in a suggestion are typed together."""
+    types = {r["id"]: r["type"] for s in suggestions for r in s["records"]}
+    for rid in range(len(records)):
+        if rid not in types:
+            types.update(assign_types(rows, records, [rid]))
+    return [types[r] for r in range(len(records))]
+
+
+def sheet_manual(rows, records):
+    """Manual Type / Covers values already filled in the uploaded sheet."""
+    out = {}
+    for rid, idxs in enumerate(records):
+        t, c = _sheet_value(rows, idxs, MANUAL_TYPE), _sheet_value(rows, idxs, COVER_OF)
+        if t or c:
+            out[str(rid)] = {"type": t, "cover": c}
+    return out
+
+
+def clean_manual(sess, manual):
+    """{record id: {type, cover}} as sent by the UI, validated."""
+    n, out = len(sess["records"]), {}
+    for k, v in (manual or {}).items():
+        try:
+            rid = int(k)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= rid < n and isinstance(v, dict):
+            out[str(rid)] = {"type": str(v.get("type") or "").strip()[:60],
+                             "cover": str(v.get("cover") or "").strip()[:300]}
+    return out
+
+
+def effective_manual(sess, saved):
+    """Sheet values, overridden by what was entered in the app (a blank entry clears)."""
+    return {**sheet_manual(sess["rows"], sess["records"]), **(saved or {})}
+
+
 def _row_writers(d, writer_cols):
     """Writer identity of one row: names per writer column, formatting ignored."""
     return tuple(frozenset(name_key(n) for n in split_names(d.get(c))) - {""} for c in writer_cols)
@@ -191,11 +277,9 @@ def writer_signature(rows, idxs, writer_cols):
     return tuple(sig)
 
 
-def _record_summary(rid, rows, idxs):
+def _record_summary(rid, rows, idxs, rtype):
     p = rows[idxs[0]]
     isrcs = list(OrderedDict.fromkeys(t for i in idxs for t in isrc_tokens(rows[i].get("ISRC"))))
-    dates = sorted(str(rows[i].get(DATE)) for i in idxs
-                   if re.match(r"\d{4}", str(rows[i].get(DATE) or "")))
     return {
         "id": rid,
         "title": _txt(p.get(TITLE)),
@@ -205,13 +289,13 @@ def _record_summary(rid, rows, idxs):
         "lyricist": ", ".join(_names(rows, idxs, "Lyricist").values()),
         "author": ", ".join(_names(rows, idxs, "Author").values()),
         "composer": ", ".join(_names(rows, idxs, "Composer").values()),
-        "release": dates[0] if dates else "",
-        "type": version_type(p.get(TITLE)),
+        "release": _release(rows, idxs),
+        "type": rtype,
         "rows": len(idxs),
     }
 
 
-def build_conflicts(rows, records, writer_cols):
+def build_conflicts(rows, records, writer_cols, types):
     """Recordings that share an ISRC but were not merged because writer credits differ.
     kind: 'missing'   - the only difference is a blank credit on some copies
           'extra'     - one copy lists extra writers on top of the other's
@@ -249,7 +333,7 @@ def build_conflicts(rows, records, writer_cols):
             else:
                 k = "different"
             kind = max(kind, k, key=rank.get)
-        recs = [_record_summary(r, rows, records[r]) for r in rids]
+        recs = [_record_summary(r, rows, records[r], types[r]) for r in rids]
         isrcs = list(OrderedDict.fromkeys(t for r in recs for t in r["isrcs"]))
         shared = [t for t in isrcs if sum(t in r["isrcs"] for r in recs) > 1]
         out.append({"kind": kind, "diff_cols": diff_cols, "isrcs": shared or isrcs,
@@ -371,7 +455,8 @@ def _suggestion(rows, records, rids, writer_cols):
     # Order versions like a song's versions: original first
     heads = {records[r][0]: r for r in rids}
     ordered = [heads[i] for i in _primary_order(rows, list(heads))]
-    recs = [_record_summary(r, rows, records[r]) for r in ordered]
+    types = assign_types(rows, records, ordered)
+    recs = [_record_summary(r, rows, records[r], types[r]) for r in ordered]
     singer_sets = {frozenset(name_key(s) for s in r["singer"].split(", ") if s) for r in recs}
     first = records[ordered[0]]
     return {
@@ -401,13 +486,14 @@ def analyze(data, file_name, owner, sheet=None, sid=None, match_names=None):
     writer_cols = [c for c in WRITER_COLS if c in headers]
     records = group_records(rows, writer_cols)
     suggestions = build_suggestions(rows, records, writer_cols)
-    conflicts = build_conflicts(rows, records, writer_cols)
+    types = record_types(rows, records, suggestions)
+    conflicts = build_conflicts(rows, records, writer_cols, types)
     sid = sid or uuid.uuid4().hex
     with _lock:
         SESSIONS[sid] = {
             "created": time.time(), "owner": owner, "file_name": file_name,
             "sheet": sheet, "sheets": sheets, "headers": headers, "labels": labels,
-            "rows": rows, "records": records,
+            "rows": rows, "records": records, "types": types,
             "suggestions": {s["id"]: s for s in suggestions}, "writer_cols": writer_cols,
             "conflicts": {c["id"]: c for c in conflicts},
             "match_names": list(match_names or []),
@@ -446,9 +532,10 @@ def payload(sid):
             "client_missing": len(missing),
         },
         "match_names": sess.get("match_names") or [],
-        "records": [flags(_record_summary(r, rows, idxs)) for r, idxs in enumerate(records)],
+        "records": [flags(_record_summary(r, rows, idxs, sess["types"][r])) for r, idxs in enumerate(records)],
         "suggestions": suggestions,
         "conflicts": conflicts,
+        "manual_types": MANUAL_TYPES,
     }
 
 
@@ -501,15 +588,28 @@ def resolve_groups(sess, decisions):
     return list(songs.values()), status, None
 
 
-def build_workbook(sess, decisions):
+def build_workbook(sess, decisions, manual=None):
     """Two sheets: 'Merged Songs' (one row per song, original + Duplicates columns)
-    and 'All Songs' (every uploaded row, unchanged, in upload order)."""
-    rows, records, headers = sess["rows"], sess["records"], sess["headers"]
+    and 'All Songs' (every uploaded row, unchanged, in upload order). Both end with
+    Type, Manual Type (dropdown) and Covers / Remix Song name.
+    manual: {record id: {type, cover}} entered in the app."""
+    rows, records = sess["rows"], sess["records"]
+    headers = [h for h in sess["headers"] if h not in TYPE_COLS]  # rewritten at the end
     label = sess.get("labels", {})
     songs, _, _ = resolve_groups(sess, decisions)
     # Within an accepted song, order recordings original-first
     songs = [[{records[r][0]: r for r in s}[i] for i in _primary_order(rows, [records[r][0] for r in s])]
              if len(s) > 1 else s for s in songs]
+    # Original / Re-release is decided among the versions that end up in one song
+    types = {}
+    for s in songs:
+        types.update(assign_types(rows, records, s))
+    manual = effective_manual(sess, manual)
+    extra = lambda r: [types[r], (manual.get(str(r)) or {}).get("type", ""),
+                       (manual.get(str(r)) or {}).get("cover", "")]
+    row_rid = {i: rid for rid, idxs in enumerate(records) for i in idxs}
+    dropdown = {"validate": "list", "source": MANUAL_TYPES, "error_type": "warning",
+                "error_title": "Manual Type", "error_message": "Not one of the listed types. Keep it anyway?"}
 
     # Songs that never credit the client are highlighted red in both sheets
     keys = _client_keys(sess.get("match_names"))
@@ -526,25 +626,37 @@ def build_workbook(sess, decisions):
         name = label.get(h, h)
         cols += [name, f"{name} (Duplicates)"]
         kinds += ["isrc" if h == "ISRC" else "orig", "dup"]
+    for name in TYPE_COLS:
+        cols += [name, f"{name} (Duplicates)"]
+        kinds += ["orig", "dup"]
     _header(ws, cols, kinds, F)
     for n, s in enumerate(songs, start=1):
         dicts = [rows[i] for r in s for i in records[r]]
         out = []
         for h in headers:
             out.extend(merge_column(h, dicts))
+        # One value per version, in the same order as the ISRC duplicates
+        per = [extra(r) for r in s]
+        for k in range(len(TYPE_COLS)):
+            dups = [v[k] for v in per[1:]]
+            out += [per[0][k], ", ".join(x or "—" for x in dups) if any(dups) else None]
         miss = all(r in missing for r in s)
         for c, v in enumerate(out):
             ws.write(n, c, _cell(v), fmt(kinds[c], miss))
+    c = cols.index(MANUAL_TYPE)
+    ws.data_validation(1, c, max(len(songs), 1), c, dropdown)
     _finish(ws, cols, len(songs), freeze_col=0)
 
     ws = wb.add_worksheet("All Songs")
-    cols = [label.get(h, h) for h in headers]
-    kinds = ["isrc" if h == "ISRC" else "orig" for h in headers]
+    cols = [label.get(h, h) for h in headers] + list(TYPE_COLS)
+    kinds = ["isrc" if h == "ISRC" else "orig" for h in headers] + ["orig"] * len(TYPE_COLS)
     _header(ws, cols, kinds, F)
     for n, d in enumerate(rows, start=1):
         miss = bool(keys) and not row_credits_client(d, headers, keys)
-        for c, h in enumerate(headers):
-            ws.write(n, c, _cell(d.get(h)), fmt(kinds[c], miss))
+        for c, v in enumerate([d.get(h) for h in headers] + extra(row_rid[n - 1])):
+            ws.write(n, c, _cell(v), fmt(kinds[c], miss))
+    c = cols.index(MANUAL_TYPE)
+    ws.data_validation(1, c, max(len(rows), 1), c, dropdown)
     _finish(ws, cols, len(rows), freeze_col=0)
 
     wb.close()
@@ -565,6 +677,7 @@ WIDTHS = {
     "Lyricist": 26, "Author": 26, "Composer": 30, "Music Label": 24, "Song Link": 40,
     "Song ID": 10, "Recording ID": 12, "Merge Basis": 22, "Suggestion ID": 12,
     "Base Title": 30, "Title": 34, "Album": 30, "Singer ": 26,
+    TYPE: 18, MANUAL_TYPE: 18, COVER_OF: 34,
 }
 
 

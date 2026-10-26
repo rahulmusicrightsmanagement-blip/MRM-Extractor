@@ -16,14 +16,39 @@ AuthKey_*.p8
 __pycache__/
 *.pyc
 *.pyo
+venv/
+.venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
 
 # node
 node_modules/
 frontend/dist/
+.vite/
+npm-debug.log*
+yarn-error.log*
 
 # runtime artifacts
 *.xlsx
+*.xls
+*.csv
+*.log
+*.progress.txt
+~$*
 
-# editor
+# export output (Muso reports, logs, progress files) — keep only the script
+muso_exports/*
+!muso_exports/muso_run.py
+.~lock.*#
+
+# editor / OS
 .vscode/
 .idea/
+.claude/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
