@@ -4,7 +4,7 @@ Drive layout (inside GDRIVE_FOLDER_ID):
     Song Merge/
         <Client name>/
             <upload>.xlsx                the uploaded file
-            <upload> - review.json       the project: decisions + metadata
+            <upload> - review.json       the project: decisions, manual types + metadata
             <upload>_merged.xlsx         the latest merged download
 
 The review file carries appProperties (client, counts, ...) so every project is
@@ -127,7 +127,8 @@ def create(data, file_name, client, owner, sheet=None):
     pid = rec["id"]
     song_merge.rename_session(temp_sid, pid)
     song_merge.SESSIONS[pid].update(state=state, folder_id=folder)
-    return {**song_merge.payload(pid), "project": _project_info(pid, state, folder), "decisions": {}}
+    return {**song_merge.payload(pid), "project": _project_info(pid, state, folder), "decisions": {},
+            "manual": song_merge.effective_manual(song_merge.SESSIONS[pid], {})}
 
 
 def _load_state(pid):
@@ -152,7 +153,7 @@ def session(pid, sheet=None):
     result = song_merge.analyze(data, state["file_name"], state["owner"], want, sid=pid,
                                 match_names=state.get("match_names") or [state["client"]])
     if result["sheet"] != state["sheet"]:  # sheet switched -> earlier decisions no longer apply
-        state.update(sheet=result["sheet"], decisions={}, suggestions=result["stats"]["suggestions"],
+        state.update(sheet=result["sheet"], decisions={}, manual={}, suggestions=result["stats"]["suggestions"],
                      rows=result["stats"]["rows"], records=result["stats"]["records"])
         with _lock(pid):
             _write_state(pid, state)
@@ -168,12 +169,17 @@ def open_project(pid, sheet=None):
     sess = session(pid, sheet)
     state = sess["state"]
     return {**song_merge.payload(pid), "project": _project_info(pid, state, sess["folder_id"]),
-            "decisions": state["decisions"]}
+            "decisions": state["decisions"],
+            "manual": song_merge.effective_manual(sess, state.get("manual"))}
 
 
-def save_decisions(pid, decisions):
+def save_decisions(pid, decisions, manual=None):
+    """manual: {record id: {type, cover}} - Manual Type and Covers / Remix Song name.
+    None leaves the saved values as they are."""
     sess = session(pid)
     state = sess["state"]
+    if manual is not None:
+        state["manual"] = song_merge.clean_manual(sess, manual)
     valid = song_merge.review_items(sess)
     state["decisions"] = {
         gid: {"status": d.get("status"), "records": [int(r) for r in (d.get("records") or [])]}
@@ -200,16 +206,19 @@ def set_match_names(pid, names):
     return result
 
 
-def download(pid, decisions):
+def download(pid, decisions, manual=None):
     """Build the merged Excel, store it in the client's folder, return (bytes, file name)."""
     sess = session(pid)
     state = sess["state"]
-    data = song_merge.build_workbook(sess, decisions or {})
+    if manual is not None:
+        manual = song_merge.clean_manual(sess, manual)
+    data = song_merge.build_workbook(sess, decisions or {},
+                                     state.get("manual") if manual is None else manual)
     name = f"{Path(state['file_name']).stem}_merged.xlsx"
 
     def store():
         try:
-            save_decisions(pid, decisions)
+            save_decisions(pid, decisions, manual)
             with _lock(pid):
                 f = gdrive.put_bytes(data, name, XLSX, parent_id=sess["folder_id"],
                                      file_id=state.get("merged_id") or None)

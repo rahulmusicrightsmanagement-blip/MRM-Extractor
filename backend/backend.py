@@ -537,6 +537,7 @@ def history(user=Depends(current_user), limit: int = 200):
 # Each merge is a project saved in Google Drive under "Song Merge/<client>/".
 class MergeDecisionsReq(BaseModel):
     decisions: dict = {}
+    manual: dict | None = None  # record id -> {type, cover}
 
 
 def _merge_call(fn, *args):
@@ -572,7 +573,7 @@ def merge_open(project_id: str, sheet: str = Query(default=""), user=Depends(cur
 
 @app.put("/api/merge/projects/{project_id}/decisions")
 def merge_save(project_id: str, req: MergeDecisionsReq, user=Depends(current_user)):
-    return _merge_call(merge_projects.save_decisions, project_id, req.decisions or {})
+    return _merge_call(merge_projects.save_decisions, project_id, req.decisions or {}, req.manual)
 
 
 @app.get("/api/merge/projects/{project_id}/compare")
@@ -601,7 +602,7 @@ def merge_delete(project_id: str, user=Depends(current_user)):
 
 @app.post("/api/merge/projects/{project_id}/download")
 def merge_download(project_id: str, req: MergeDecisionsReq, user=Depends(current_user)):
-    data, name = _merge_call(merge_projects.download, project_id, req.decisions or {})
+    data, name = _merge_call(merge_projects.download, project_id, req.decisions or {}, req.manual)
     return Response(
         content=data,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

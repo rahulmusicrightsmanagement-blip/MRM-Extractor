@@ -119,7 +119,7 @@ export function Credit() {
         border: `1px solid ${T.borderSoft}`,
       }}
     >
-      Developed by RDJ V.3.0.0
+      Developed by RDJ V.3.1.1
     </div>
   );
 }
@@ -1221,6 +1221,8 @@ function ClientNames({ names, onSave }) {
 
 const TYPE_COLORS = {
   "Original / Re-release": [T.p2, T.ink],
+  Original: [T.p2, T.ink],
+  "Re-release": ["#DCFCE7", "#166534"],
   Remix: ["#E0E7FF", "#3730A3"],
   Lofi: ["#EDE9FE", "#5B21B6"],
   Jhankar: ["#FCE7F3", "#9D174D"],
@@ -1228,7 +1230,51 @@ const TYPE_COLORS = {
   Instrumental: ["#E0F2FE", "#075985"],
 };
 
+function TypePill({ type }) {
+  const [bg, fg] = TYPE_COLORS[type] || ["#F1F5F9", "#334155"];
+  return <Pill bg={bg} fg={fg} small>{type}</Pill>;
+}
+
 const fmtN = (n) => Number(n || 0).toLocaleString("en-IN");
+
+const MANUAL_TYPES = ["Original", "Re-release", "Remix", "Lofi", "Jhankar", "Slowed / Reverb", "Reprise",
+  "Unplugged / Acoustic", "Live", "Instrumental", "Cover", "Recreated", "Medley / Mashup",
+  "Male / Female Version", "Sad / Happy Version", "Other"];
+
+// Manual Type dropdown + Covers / Remix Song name, filled in by hand per recording
+function ManualCells({ r, manual, setManual, onEdit }) {
+  const m = manual[r.id] || {};
+  const edit = (key, value) => { setManual(r.id, key, value); onEdit?.(); };
+  const options = m.type && !MANUAL_TYPES.includes(m.type) ? [m.type, ...MANUAL_TYPES] : MANUAL_TYPES;
+  const stop = (e) => e.stopPropagation();
+  const box = { background: T.surface, color: T.ink, border: `1px solid ${T.border}` };
+  return (
+    <>
+      <td className="px-4 py-2" onClick={stop}>
+        <select
+          value={m.type || ""}
+          onChange={(e) => edit("type", e.target.value)}
+          className="rounded-lg px-2 py-1 text-xs outline-none cursor-pointer"
+          style={box}
+          aria-label={`Manual type for ${r.title}`}
+        >
+          <option value="">—</option>
+          {options.map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+      </td>
+      <td className="px-4 py-2" onClick={stop}>
+        <input
+          value={m.cover || ""}
+          onChange={(e) => edit("cover", e.target.value)}
+          placeholder="Original song name"
+          className="w-56 rounded-lg px-2 py-1 text-xs outline-none"
+          style={box}
+          aria-label={`Covers / remix song name for ${r.title}`}
+        />
+      </td>
+    </>
+  );
+}
 
 const LAST_MERGE_KEY = "mrm_merge_project";
 
@@ -1266,6 +1312,7 @@ function MergeTool({ token, user, active }) {
   const [data, setData] = useState(null);
   const [project, setProject] = useState(null);
   const [dec, setDec] = useState({}); // suggestion id -> { status, excluded: [record ids] }
+  const [manual, setManualMap] = useState({}); // record id -> { type, cover }
   const [tab, setTab] = useState("suggestions");
   const [downloading, setDownloading] = useState(false);
   const [saveState, setSaveState] = useState("saved"); // saved | saving | error
@@ -1291,6 +1338,7 @@ function MergeTool({ token, user, active }) {
     setData(d);
     setProject(d.project);
     setDec(decisionsFromServer(d.decisions, [...d.suggestions, ...(d.conflicts || [])]));
+    setManualMap(d.manual || {});
     setTab(d.suggestions.length ? "suggestions" : "isrc");
     setSaveState("saved");
     try { localStorage.setItem(LAST_MERGE_KEY, d.project.id); } catch { /* storage unavailable */ }
@@ -1372,13 +1420,15 @@ function MergeTool({ token, user, active }) {
         const r = await fetch(`${API}/api/merge/projects/${project.id}/decisions`, {
           method: "PUT",
           headers: { ...auth, "Content-Type": "application/json" },
-          body: JSON.stringify({ decisions: decisionsToServer(dec, [...data.suggestions, ...(data.conflicts || [])]) }),
+          body: JSON.stringify({ decisions: decisionsToServer(dec, [...data.suggestions, ...(data.conflicts || [])]), manual }),
         });
         setSaveState(r.ok ? "saved" : "error");
       } catch { setSaveState("error"); }
     }, 800);
     return () => clearTimeout(t);
-  }, [dec]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dec, manual]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const setManual = (rid, key, value) => setManualMap((p) => ({ ...p, [rid]: { type: "", cover: "", ...p[rid], [key]: value } }));
 
   const setStatus = (ids, status) => setDec((p) => {
     const n = { ...p };
@@ -1442,7 +1492,7 @@ function MergeTool({ token, user, active }) {
       const r = await fetch(`${API}/api/merge/projects/${project.id}/download`, {
         method: "POST",
         headers: { ...auth, "Content-Type": "application/json" },
-        body: JSON.stringify({ decisions: decisionsToServer(dec, [...data.suggestions, ...(data.conflicts || [])]) }),
+        body: JSON.stringify({ decisions: decisionsToServer(dec, [...data.suggestions, ...(data.conflicts || [])]), manual }),
       });
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));
@@ -1619,9 +1669,14 @@ function MergeTool({ token, user, active }) {
     <div>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
-          <button onClick={closeProject} className="mb-1 inline-flex items-center gap-1 text-xs font-semibold hover:underline" style={{ color: T.ink2 }}>
-            <IconArrowLeft /> All merges
-          </button>
+          <MergeSwitcher
+            projects={projects}
+            currentId={project.id}
+            busy={busy}
+            onAll={closeProject}
+            onOpen={(id) => id !== project.id && openProject(id)}
+            onRefresh={loadProjects}
+          />
           <h1 className="text-2xl font-bold tracking-tight" style={{ color: T.ink }}>{project.client}</h1>
           <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm" style={{ color: T.ink2 }}>
             <span className="inline-flex items-center gap-1.5 font-semibold" style={{ color: T.ink }}><IconMusic /> {data.file_name}</span>
@@ -1738,7 +1793,7 @@ function MergeTool({ token, user, active }) {
       </div>
 
       {tab === "suggestions" && (
-        <SuggestionsPanel active={active} suggestions={data.suggestions} writerCols={data.writer_cols} dec={dec} counts={counts} setStatus={setStatus} setExcluded={setExcluded} />
+        <SuggestionsPanel active={active} suggestions={data.suggestions} writerCols={data.writer_cols} dec={dec} counts={counts} setStatus={setStatus} setExcluded={setExcluded} manual={manual} setManual={setManual} />
       )}
       {tab === "conflicts" && (
         <ConflictsPanel
@@ -1752,7 +1807,113 @@ function MergeTool({ token, user, active }) {
           token={token}
         />
       )}
-      {tab === "isrc" && <IsrcPanel records={data.records} filter={isrcFilter} setFilter={setIsrcFilter} />}
+      {tab === "isrc" && <IsrcPanel records={data.records} filter={isrcFilter} setFilter={setIsrcFilter} manual={manual} setManual={setManual} />}
+    </div>
+  );
+}
+
+// "All merges" button with a dropdown to jump straight to another saved merge
+function MergeSwitcher({ projects, currentId, busy, onAll, onOpen, onRefresh }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onDown); document.removeEventListener("keydown", onKey); };
+  }, [open]);
+
+  const list = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    return (projects || []).filter((p) => !s || p.client.toLowerCase().includes(s) || p.file_name.toLowerCase().includes(s));
+  }, [projects, q]);
+
+  const toggleOpen = () => {
+    if (!open) { setQ(""); onRefresh(); } // fresh review progress
+    setOpen(!open);
+  };
+
+  return (
+    <div ref={ref} className="relative mb-2 inline-flex rounded-xl" style={{ border: `1px solid ${T.border}`, background: T.surface, boxShadow: `0 2px 8px ${T.p4}1a` }}>
+      <button
+        onClick={onAll}
+        className="inline-flex items-center gap-1.5 pl-3 pr-3 py-1.5 text-xs font-semibold rounded-l-xl transition hover:bg-black/5"
+        style={{ color: T.ink }}
+      >
+        <IconArrowLeft /> All merges
+      </button>
+      <button
+        onClick={toggleOpen}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        title="Switch to another merge"
+        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-r-xl transition hover:bg-black/5"
+        style={{ color: T.ink2, borderLeft: `1px solid ${T.border}`, background: open ? T.p1 : "transparent" }}
+      >
+        Switch <IconChevronDown />
+      </button>
+      {open && (
+        <div
+          className="absolute left-0 top-full mt-2 z-40 w-[380px] max-w-[calc(100vw-2rem)] rounded-2xl overflow-hidden"
+          style={{ background: T.surface, border: `1px solid ${T.border}`, boxShadow: `0 16px 40px ${T.p4}40` }}
+        >
+          <div className="p-2" style={{ borderBottom: `1px solid ${T.borderSoft}` }}>
+            <div className="relative">
+              <div className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: T.ink3 }}><IconSearch /></div>
+              <input
+                autoFocus
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="Search client or file…"
+                className="w-full rounded-xl pl-9 pr-3 py-2 text-sm outline-none"
+                style={{ background: T.surfaceTint, border: `1px solid ${T.border}`, color: T.ink }}
+              />
+            </div>
+          </div>
+          <div className="max-h-80 overflow-y-auto py-1" role="listbox">
+            {projects === null ? (
+              <div className="px-4 py-6 text-center text-sm" style={{ color: T.ink3 }}>Loading saved merges…</div>
+            ) : list.length === 0 ? (
+              <div className="px-4 py-6 text-center text-sm" style={{ color: T.ink3 }}>No merges match.</div>
+            ) : list.map((p) => {
+              const cur = p.id === currentId;
+              const done = p.accepted + p.rejected;
+              return (
+                <button
+                  key={p.id}
+                  role="option"
+                  aria-selected={cur}
+                  disabled={busy}
+                  onClick={() => { setOpen(false); onOpen(p.id); }}
+                  className="w-full text-left px-3 py-2.5 flex items-center gap-3 transition hover:bg-black/[0.03] disabled:opacity-50"
+                  style={{ background: cur ? T.p1 : "transparent", borderLeft: `3px solid ${cur ? T.ink : "transparent"}` }}
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-semibold truncate" style={{ color: T.ink }}>{p.client}</span>
+                    <span className="block text-xs truncate" style={{ color: T.ink3 }}>{p.file_name}</span>
+                  </span>
+                  <span className="flex-none text-right">
+                    <span className="block text-xs font-semibold tabular-nums" style={{ color: T.ink2 }}>{done}/{p.total}</span>
+                    <span className="block text-[11px] tabular-nums" style={{ color: T.ink3 }}>{fmtN(p.songs)} songs</span>
+                  </span>
+                  {cur && <span style={{ color: T.ink }}><IconCheckSmall /></span>}
+                </button>
+              );
+            })}
+          </div>
+          <button
+            onClick={() => { setOpen(false); onAll(); }}
+            className="w-full px-4 py-2.5 text-xs font-semibold flex items-center justify-center gap-1.5 transition hover:bg-black/[0.03]"
+            style={{ color: T.ink, borderTop: `1px solid ${T.borderSoft}` }}
+          >
+            <IconPlus /> Start a new merge / see all
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1827,7 +1988,7 @@ function useReviewKeys(active, decide, go) {
   });
 }
 
-function SuggestionsPanel({ active, suggestions, writerCols, dec, counts, setStatus, setExcluded }) {
+function SuggestionsPanel({ active, suggestions, writerCols, dec, counts, setStatus, setExcluded, manual, setManual }) {
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState("pending");
   const [selectedId, setSelectedId] = useState(null);
@@ -1989,6 +2150,8 @@ function SuggestionsPanel({ active, suggestions, writerCols, dec, counts, setSta
           onPrev={() => go(-1)}
           onNext={() => go(1)}
           onExcluded={(ex) => setExcluded(sel.id, ex)}
+          manual={manual}
+          setManual={setManual}
         />
       ) : (
         <Card><Muted>Select a suggestion on the left.</Muted></Card>
@@ -2007,7 +2170,7 @@ function StatusIcon({ status }) {
   return <span className="flex-none w-5 h-5 rounded-full" style={{ border: `2px solid ${T.p4}` }} />;
 }
 
-function SuggestionDetail({ g, pos, total, writerCols, d, onDecide, onPrev, onNext, onExcluded }) {
+function SuggestionDetail({ g, pos, total, writerCols, d, onDecide, onPrev, onNext, onExcluded, manual, setManual }) {
   const selected = g.records.filter((r) => !d.excluded.includes(r.id)).length;
   const accepted = d.status === "accepted";
   const rejected = d.status === "rejected";
@@ -2090,7 +2253,7 @@ function SuggestionDetail({ g, pos, total, writerCols, d, onDecide, onPrev, onNe
       </div>
 
       <div className="overflow-x-auto">
-        <table className="w-full text-sm" style={{ minWidth: 760, borderCollapse: "collapse" }}>
+        <table className="w-full text-sm" style={{ minWidth: 1180, borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: T.p1 }}>
               <th className="pl-5 pr-2 py-2.5 w-8 text-left">
@@ -2110,6 +2273,8 @@ function SuggestionDetail({ g, pos, total, writerCols, d, onDecide, onPrev, onNe
               <Th>ISRC</Th>
               <Th>Released</Th>
               <Th>Type</Th>
+              <Th>Manual type</Th>
+              <Th>Covers / Remix song name</Th>
             </tr>
           </thead>
           <tbody>
@@ -2119,8 +2284,6 @@ function SuggestionDetail({ g, pos, total, writerCols, d, onDecide, onPrev, onNe
               return (
                 <tr
                   key={r.id}
-                  onClick={() => !rejected && toggle(r.id)}
-                  className={rejected ? "" : "cursor-pointer"}
                   style={{ background: i % 2 ? T.surfaceTint : T.surface, opacity: on ? 1 : 0.45, borderTop: `1px solid ${T.borderSoft}` }}
                 >
                   <td className="pl-5 pr-2 py-2.5">
@@ -2129,7 +2292,6 @@ function SuggestionDetail({ g, pos, total, writerCols, d, onDecide, onPrev, onNe
                       checked={on}
                       disabled={rejected}
                       onChange={() => toggle(r.id)}
-                      onClick={(e) => e.stopPropagation()}
                       className="w-4 h-4 cursor-pointer"
                       style={{ accentColor: T.ink }}
                       aria-label={`Include ${r.title}`}
@@ -2145,6 +2307,7 @@ function SuggestionDetail({ g, pos, total, writerCols, d, onDecide, onPrev, onNe
                   <td className="px-4 py-2.5 mono text-xs whitespace-nowrap" style={{ color: T.ink2 }}>{r.isrcs.length ? r.isrcs.map((x) => <div key={x}>{x}</div>) : "—"}</td>
                   <td className="px-4 py-2.5 text-xs whitespace-nowrap tabular-nums" style={{ color: T.ink2 }}>{r.release ? r.release.slice(0, 10) : "—"}</td>
                   <td className="px-4 py-2.5"><Pill bg={bg} fg={fg} small>{r.type}</Pill></td>
+                  <ManualCells r={r} manual={manual} setManual={setManual} onEdit={() => !rejected && !on && toggle(r.id)} />
                 </tr>
               );
             })}
@@ -2554,7 +2717,7 @@ function CompareDetail({ g, pos, total, d, onDecide, onPrev, onNext, onExcluded,
                   const rec = g.records.find((x) => x.id === r.id) || {};
                   return (
                     <th key={r.id} className="px-4 py-3 text-left align-top" style={{ opacity: on ? 1 : 0.5 }}>
-                      <label className="flex items-start gap-2 cursor-pointer">
+                      <div className="flex items-start gap-2">
                         <input
                           type="checkbox"
                           checked={on}
@@ -2562,13 +2725,14 @@ function CompareDetail({ g, pos, total, d, onDecide, onPrev, onNext, onExcluded,
                           onChange={() => toggle(r.id)}
                           className="w-4 h-4 mt-0.5 cursor-pointer"
                           style={{ accentColor: T.ink }}
+                          aria-label={`Include copy ${i + 1}`}
                         />
                         <span>
                           <span className="block text-xs font-bold uppercase tracking-wider" style={{ color: T.ink2 }}>Copy {i + 1}{r.rows > 1 ? ` · ${r.rows} rows` : ""}</span>
                           <span className="block text-sm font-semibold normal-case" style={{ color: T.ink }}>{rec.album || rec.title}</span>
                           {rec.client_credited === false && <Pill bg={RED.bg} fg={RED.ink} small>Client not credited</Pill>}
                         </span>
-                      </label>
+                      </div>
                     </th>
                   );
                 })}
@@ -2610,7 +2774,7 @@ const ISRC_FILTERS = [
   ["client", "Client not credited", (r) => r.client_credited === false],
 ];
 
-function IsrcPanel({ records, filter, setFilter }) {
+function IsrcPanel({ records, filter, setFilter, manual, setManual }) {
   const [q, setQ] = useState("");
   const [limit, setLimit] = useState(50);
   const counts = useMemo(
@@ -2673,7 +2837,7 @@ function IsrcPanel({ records, filter, setFilter }) {
         </div>
       )}
       <div className="rounded-xl overflow-x-auto" style={{ border: `1px solid ${T.borderSoft}` }}>
-        <table className="w-full text-sm" style={{ minWidth: 1200, borderCollapse: "collapse" }}>
+        <table className="w-full text-sm" style={{ minWidth: 1700, borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: T.p1 }}>
               <Th>Title</Th>
@@ -2683,6 +2847,9 @@ function IsrcPanel({ records, filter, setFilter }) {
               <Th>Lyricist</Th>
               <Th>Composer</Th>
               <Th right>Rows</Th>
+              <Th>Type</Th>
+              <Th>Manual type</Th>
+              <Th>Covers / Remix song name</Th>
             </tr>
           </thead>
           <tbody>
@@ -2711,6 +2878,8 @@ function IsrcPanel({ records, filter, setFilter }) {
                     {r.rows}
                   </span>
                 </td>
+                <td className="px-4 py-2.5"><TypePill type={r.type} /></td>
+                <ManualCells r={r} manual={manual} setManual={setManual} />
               </tr>
             ))}
           </tbody>
@@ -3311,6 +3480,7 @@ const IconCheckSmall = () => <SVG size={12}><path d="M2 6l3 3 5-5" stroke="curre
 const IconRefresh = () => <SVG><path d="M3 8a5 5 0 0 1 8.5-3.5L13 6M13 8a5 5 0 0 1-8.5 3.5L3 10M13 3v3h-3M3 13v-3h3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></SVG>;
 const IconDownload = () => <SVG><path d="M8 2v8m0 0l-3-3m3 3l3-3M3 12h10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></SVG>;
 const IconArrowRight = () => <SVG><path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></SVG>;
+const IconChevronDown = () => <SVG size={12}><path d="M3 6l5 5 5-5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></SVG>;
 const IconArrowLeft = () => <SVG><path d="M13 8H3M7 4L3 8l4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></SVG>;
 const IconSearch = () => <SVG><circle cx="7" cy="7" r="4.5" stroke="currentColor" strokeWidth="1.5" /><path d="M10.5 10.5L14 14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></SVG>;
 const IconExternal = () => <SVG><path d="M6 3H3v10h10V10M9 3h4v4M7 9l6-6" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" /></SVG>;

@@ -24,6 +24,11 @@ frontend/dist/
 # runtime artifacts
 *.xlsx
 
+# export output (Muso reports, logs, progress files) — keep only the script
+muso_exports/*
+!muso_exports/muso_run.py
+.~lock.*#
+
 # editor
 .vscode/
 .idea/
